@@ -12,7 +12,7 @@ class AvrDude
 {
 public:
 	typedef std::shared_ptr<AvrDude> Ptr;
-	typedef std::function<void(bool& /* cancel */)> RunFn;
+	typedef std::function<void(AvrDude&)> RunFn;
 	typedef std::function<void(const char * /* msg */, unsigned /* size */)> MessageFn;
 	typedef std::function<void(const char * /* task */, unsigned /* progress */)> ProgressFn;
 	typedef std::function<void(int /* exit status */, size_t /* args_id */)> CompleteFn;

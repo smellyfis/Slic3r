@@ -1,13 +1,21 @@
-#include "FirmwareDialog.hpp"
-
 #include <iostream>   // XXX
 #include <numeric>
 #include <algorithm>
+#include <thread>
 #include <boost/format.hpp>
 #include <boost/asio.hpp>
 #include <boost/filesystem/path.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/log/trivial.hpp>
+
+#include "libslic3r/Utils.hpp"
+#include "avrdude/avrdude-slic3r.hpp"
+#include "GUI.hpp"
+#include "../Utils/HexFile.hpp"
+#include "../Utils/Serial.hpp"
+
+// wx includes need to come after asio because of the WinSock.h problem
+#include "FirmwareDialog.hpp"
 
 #include <wx/app.h>
 #include <wx/event.h>
@@ -24,10 +32,6 @@
 #include <wx/collpane.h>
 #include <wx/msgdlg.h>
 
-#include "libslic3r/Utils.hpp"
-#include "avrdude/avrdude-slic3r.hpp"
-#include "GUI.hpp"
-#include "../Utils/Serial.hpp"
 
 namespace fs = boost::filesystem;
 namespace asio = boost::asio;
@@ -35,6 +39,10 @@ using boost::system::error_code;
 
 
 namespace Slic3r {
+
+using Utils::HexFile;
+using Utils::SerialPortInfo;
+using Utils::Serial;
 
 
 // This enum discriminates the kind of information in EVT_AVRDUDE,
@@ -52,55 +60,6 @@ wxDEFINE_EVENT(EVT_AVRDUDE, wxCommandEvent);
 
 // Private
 
-struct HexMeta
-{
-	static const char *hex_terminator;
-
-	// Byte-offset of the second 'section' - the l10n data to be flashed into MK3 xflash
-	// Zero if there is no second 'section'
-	size_t lang_offset;    // FIXME: use num_secions
-
-	// Holds the complete printer model/variant string to be compared with what the printer reports
-	// Example: 1_75mm_MK3-EINSy10a-E3Dv6full
-	std::string printer_model;
-
-	HexMeta(fs::path path) : lang_offset(0)
-	{
-		fs::ifstream file(path);
-		if (! file.good()) {
-			return;
-		}
-
-		size_t offset = 0;
-		std::string line;
-		while (getline(file, line, '\n').good()) {
-			// Account for LF vs CRLF
-			if (!line.empty() && line.back() != '\r') {
-				line.push_back('\r');
-			}
-
-			if (line == hex_terminator) {
-				if (offset == 0) {
-					// This is the first terminator seen, save the position
-					offset = file.tellg();
-				} else {
-					// We've found another terminator, use the offset just after the first one
-					// which is the start of the second 'section'.
-					this->lang_offset = offset;
-				}
-			}
-		}
-
-		if (!line.empty() && line[0] != ':') {
-			// The printer model string is on the last line, if any
-			line.pop_back();   // Remove the '\r' we added earlier
-			this->printer_model = std::move(line);
-		}
-	}
-};
-
-const char *HexMeta::hex_terminator = ":00000001FF\r";
-
 struct FirmwareDialog::priv
 {
 	enum AvrDudeComplete
@@ -114,7 +73,7 @@ struct FirmwareDialog::priv
 	FirmwareDialog *q;      // PIMPL back pointer ("Q-Pointer")
 
 	wxComboBox *port_picker;
-	std::vector<Utils::SerialPortInfo> ports;
+	std::vector<SerialPortInfo> ports;
 	wxFilePickerCtrl *hex_picker;
 	wxStaticText *txt_status;
 	wxGauge *progressbar;
@@ -135,6 +94,7 @@ struct FirmwareDialog::priv
 	unsigned progress_tasks_done;
 	unsigned progress_tasks_bar;
 	bool cancelled;
+	const bool extra_verbose;   // For debugging
 
 	priv(FirmwareDialog *q) :
 		q(q),
@@ -144,15 +104,21 @@ struct FirmwareDialog::priv
 		avrdude_config((fs::path(::Slic3r::resources_dir()) / "avrdude" / "avrdude.conf").string()),
 		progress_tasks_done(0),
 		progress_tasks_bar(0),
-		cancelled(false)
+		cancelled(false),
+		extra_verbose(false)
 	{}
 
 	void find_serial_ports();
-	void flashing_start(bool flashing_l10n);
+	void flashing_start(unsigned tasks);
 	void flashing_done(AvrDudeComplete complete);
-	size_t hex_num_sections(const wxString &path);
-	bool check_printer_model(const HexMeta &metadata, std::string port);
+	bool check_model_id(const HexFile &metadata, std::string port);
+
+	void prepare_common(AvrDude &, const SerialPortInfo &port);
+	void prepare_mk2(AvrDude &, const SerialPortInfo &port);
+	void prepare_mk3(AvrDude &, const SerialPortInfo &port);
+	void prepare_mm_control(AvrDude &, const SerialPortInfo &port);
 	void perform_upload();
+
 	void cancel();
 	void on_avrdude(const wxCommandEvent &evt);
 };
@@ -178,7 +144,7 @@ void FirmwareDialog::priv::find_serial_ports()
 	}
 }
 
-void FirmwareDialog::priv::flashing_start(bool flashing_l10n)
+void FirmwareDialog::priv::flashing_start(unsigned tasks)
 {
 	txt_stdout->Clear();
 	txt_status->SetLabel(_(L("Flashing in progress. Please do not disconnect the printer!")));
@@ -188,7 +154,7 @@ void FirmwareDialog::priv::flashing_start(bool flashing_l10n)
 	hex_picker->Disable();
 	btn_close->Disable();
 	btn_flash->SetLabel(btn_flash_label_flashing);
-	progressbar->SetRange(flashing_l10n ? 400 : 200);   // See progress callback below
+	progressbar->SetRange(200 * tasks);   // See progress callback below
 	progressbar->SetValue(0);
 	progress_tasks_done = 0;
 	progress_tasks_bar = 0;
@@ -215,38 +181,15 @@ void FirmwareDialog::priv::flashing_done(AvrDudeComplete complete)
 	}
 }
 
-size_t FirmwareDialog::priv::hex_num_sections(const wxString &path)   // XXX: remove in favor of HexMeta
+bool FirmwareDialog::priv::check_model_id(const HexFile &metadata, std::string port)
 {
-	fs::ifstream file(fs::path(path.wx_str()));
-	if (! file.good()) {
-		return 0;
-	}
-
-	static const char *hex_terminator = ":00000001FF\r";
-	size_t res = 0;
-	std::string line;
-	while (getline(file, line, '\n').good()) {
-		// Account for LF vs CRLF
-		if (!line.empty() && line.back() != '\r') {
-			line.push_back('\r');
-		}
-
-		if (line == hex_terminator) {
-			res++;
-		}
-	}
-
-	return res;
-}
-
-bool FirmwareDialog::priv::check_printer_model(const HexMeta &metadata, std::string port)
-{
-	if (metadata.printer_model.empty()) {
+	if (metadata.model_id.empty()) {
 		return false;
 	}
 
 	asio::io_service io;
-	Utils::Serial serial(io, port, 115200);
+	Serial serial(io, port, 115200);
+	serial.printer_setup();
 
 	enum {
 		TIMEOUT = 1000,
@@ -263,7 +206,7 @@ bool FirmwareDialog::priv::check_printer_model(const HexMeta &metadata, std::str
 		serial.printer_write_line("PRUSA Rev");
 
 		while (serial.read_line(TIMEOUT, line, ec)) {
-			if (line == metadata.printer_model) {
+			if (line == metadata.model_id) {
 				return true;
 			}
 			line.clear();
@@ -273,35 +216,10 @@ bool FirmwareDialog::priv::check_printer_model(const HexMeta &metadata, std::str
 	return false;
 }
 
-void FirmwareDialog::priv::perform_upload()
+void FirmwareDialog::priv::prepare_common(AvrDude &avrdude, const SerialPortInfo &port)
 {
 	auto filename = hex_picker->GetPath();
-	std::string port = port_picker->GetValue().ToStdString();
-	int  selection = port_picker->GetSelection();
-	if (selection != -1) {
-		// Verify whether the combo box list selection equals to the combo box edit value.
-		if (this->ports[selection].friendly_name == port)
-			port = this->ports[selection].port;
-	}
-	// if (filename.IsEmpty() || port.empty()) { return; }     // XXX
 
-	const bool extra_verbose = false;   // For debugging
-	const auto num_secions = hex_num_sections(filename);
-	HexMeta metadata(filename.wx_str());
-	const auto filename_utf8 = filename.utf8_str();
-
-	metadata.printer_model = "1_75mm_MK3-EINSy_10a-E3Dv6full";   // XXX
-
-	flashing_start(num_secions > 1);
-
-	// It is ok here to use the q-pointer to the FirmwareDialog
-	// because the dialog ensures it doesn't exit before the background thread is done.
-	auto q = this->q;
-
-	// Init the avrdude object
-	AvrDude avrdude(avrdude_config);
-
-	// Build argument list(s)
 	std::vector<std::string> args {{
 		extra_verbose ? "-vvvvv" : "-v",
 		"-p", "atmega2560",
@@ -309,11 +227,10 @@ void FirmwareDialog::priv::perform_upload()
 		// The Prusa's avrdude is patched to never send semicolons inside the data packets, as the USB to serial chip
 		// is flashed with a buggy firmware.
 		"-c", "wiring",
-		"-P", port,
+		"-P", port.port,
 		"-b", "115200",   // TODO: Allow other rates? Ditto below.
 		"-D",
-		// XXX: Safe mode?
-		"-U", (boost::format("flash:w:0:%1%:i") % filename_utf8.data()).str(),
+		"-U", (boost::format("flash:w:0:%1%:i") % filename.utf8_str().data()).str(),
 	}};
 
 	BOOST_LOG_TRIVIAL(info) << "Invoking avrdude, arguments: "
@@ -321,41 +238,167 @@ void FirmwareDialog::priv::perform_upload()
 			return a + ' ' + b;
 		});
 
-	// avrdude.push_args(std::move(args));   // XXX
-	
-	if (num_secions > 1) {
-		// The hex file also contains another section with l10n data to be flashed into the external flash on MK3 (Einsy)
-		// This is done via another avrdude invocation, here we build arg list for that:
-		std::vector<std::string> args_l10n {{
-			extra_verbose ? "-vvvvv" : "-v",
-			"-p", "atmega2560",
-			// Using the "Arduino" mode to program Einsy's external flash with languages, using the STK500 protocol (not the STK500v2).
-			// The Prusa's avrdude is patched again to never send semicolons inside the data packets.
-			"-c", "arduino",
-			"-P", port,
-			"-b", "115200",
-			"-D",
-			"-u", // disable safe mode
-			"-U", (boost::format("flash:w:1:%1%:i") % filename_utf8.data()).str(),
-		}};
+	avrdude.push_args(std::move(args));
+}
 
-		BOOST_LOG_TRIVIAL(info) << "Invoking avrdude for external flash flashing, arguments: "
-			<< std::accumulate(std::next(args_l10n.begin()), args_l10n.end(), args_l10n[0], [](std::string a, const std::string &b) {
-				return a + ' ' + b;
-			});
+void FirmwareDialog::priv::prepare_mk2(AvrDude &avrdude, const SerialPortInfo &port)
+{
+	flashing_start(1);
+	prepare_common(avrdude, port);
+}
 
-		// avrdude.push_args(std::move(args_l10n));
+void FirmwareDialog::priv::prepare_mk3(AvrDude &avrdude, const SerialPortInfo &port)
+{
+	flashing_start(2);
+	prepare_common(avrdude, port);
+
+	auto filename = hex_picker->GetPath();
+
+	// The hex file also contains another section with l10n data to be flashed into the external flash on MK3 (Einsy)
+	// This is done via another avrdude invocation, here we build arg list for that:
+	std::vector<std::string> args_l10n {{
+		extra_verbose ? "-vvvvv" : "-v",
+		"-p", "atmega2560",
+		// Using the "Arduino" mode to program Einsy's external flash with languages, using the STK500 protocol (not the STK500v2).
+		// The Prusa's avrdude is patched again to never send semicolons inside the data packets.
+		"-c", "arduino",
+		"-P", port.port,
+		"-b", "115200",
+		"-D",
+		"-u", // disable safe mode
+		"-U", (boost::format("flash:w:1:%1%:i") % filename.utf8_str().data()).str(),
+	}};
+
+	BOOST_LOG_TRIVIAL(info) << "Invoking avrdude for external flash flashing, arguments: "
+		<< std::accumulate(std::next(args_l10n.begin()), args_l10n.end(), args_l10n[0], [](std::string a, const std::string &b) {
+			return a + ' ' + b;
+		});
+
+	avrdude.push_args(std::move(args_l10n));
+}
+
+void FirmwareDialog::priv::prepare_mm_control(AvrDude &avrdude, const SerialPortInfo &port_in)
+{
+	// Check if the port has the PID/VID of 0x2c99/3
+	// If not, check if it is the MMU (0x2c99/4) and reboot the by opening @ 1200 bauds
+	BOOST_LOG_TRIVIAL(info) << "Flashing MMU 2.0, looking for VID/PID 0x2c99/3 or 0x2c99/4 ...";
+	SerialPortInfo port = port_in;
+	if (! port.id_match(0x2c99, 3)) {
+		if (! port.id_match(0x2c99, 4)) {
+			// This is not a Prusa MMU 2.0 device
+			// FIXME: error out
+			BOOST_LOG_TRIVIAL(error) << boost::format("Not a Prusa MMU 2.0 device: `%1%`") % port.port;
+			return;
+		}
+
+		BOOST_LOG_TRIVIAL(info) << boost::format("Found VID/PID 0x2c99/4 at `%1%`, rebooting the device ...") % port.port;
+
+		{
+			asio::io_service io;
+			Serial serial(io, port.port, 1200);
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+
+		// Wait for the bootloader to show up
+		std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
+		// Look for the rebooted device
+		BOOST_LOG_TRIVIAL(info) << "... looking for VID/PID 0x2c99/3 ...";
+		auto new_ports = Utils::scan_serial_ports_extended();
+		unsigned hits = 0;
+		for (auto &&new_port : new_ports) {
+			if (new_port.id_match(0x2c99, 3)) {
+				hits++;
+				port = std::move(new_port);
+			}
+		}
+
+		if (hits == 0) {
+			// FIXME: error out
+			BOOST_LOG_TRIVIAL(error) << "No VID/PID 0x2c99/3 device found after rebooting the MMU 2.0";
+			return;
+		} else if (hits > 1) {
+			// We found multiple 0x2c99/3 devices, this is bad, because there's no way to find out
+			// which one is the one user wants to flash.
+			// FIXME: error out
+			BOOST_LOG_TRIVIAL(error) << "Several VID/PID 0x2c99/3 devices found after rebooting the MMU 2.0";
+			return;
+		}
 	}
 
+	BOOST_LOG_TRIVIAL(info) << boost::format("Found VID/PID 0x2c99/3 at `%1%`, flashing ...") % port.port;
+
+	auto filename = hex_picker->GetPath();
+
+	std::vector<std::string> args {{
+		extra_verbose ? "-vvvvv" : "-v",
+		"-p", "atmega32u4",
+		"-c", "avr109",
+		"-P", port.port,
+		"-b", "57600",
+		"-D",
+		"-U", (boost::format("flash:w:0:%1%:i") % filename.utf8_str().data()).str(),
+	}};
+
+	BOOST_LOG_TRIVIAL(info) << "Invoking avrdude, arguments: "
+		<< std::accumulate(std::next(args.begin()), args.end(), args[0], [](std::string a, const std::string &b) {
+			return a + ' ' + b;
+		});
+
+	avrdude.push_args(std::move(args));
+}
+
+
+void FirmwareDialog::priv::perform_upload()
+{
+	// hex_picker->SetPath("/home/vojta/prog/prusa/w-fwupdater/scratch/MM-control-01/MM-control-meta.hex"); // XXX
+	auto filename = hex_picker->GetPath();
+	if (filename.IsEmpty()) { return; }
+
+	int selection = port_picker->GetSelection();
+	if (selection == wxNOT_FOUND) { return; }
+
+	std::string port_selected = port_picker->GetValue().ToStdString();
+	const SerialPortInfo &port = this->ports[selection];
+	// Verify whether the combo box list selection equals to the combo box edit value.
+	if (this->ports[selection].friendly_name != port_selected) { return; }
+
+	const bool extra_verbose = false;   // For debugging
+	HexFile metadata(filename.wx_str());
+	// const auto filename_utf8 = filename.utf8_str();
+
+	flashing_start(metadata.device == HexFile::DEV_MK3 ? 2 : 1);
+
+	// Init the avrdude object
+	AvrDude avrdude(avrdude_config);
+
+	// It is ok here to use the q-pointer to the FirmwareDialog
+	// because the dialog ensures it doesn't exit before the background thread is done.
+	auto q = this->q;
+
 	this->avrdude = avrdude
-		.on_run([this, metadata, port](bool &cancel) {
-			// TODO
+		.on_run([this, metadata, port](AvrDude &avrdude) {
+			// TODO: model_id check
 
-			const auto model_matches = this->check_printer_model(metadata, std::move(port));
-			std::cerr << "check_printer_model: " << model_matches << std::endl;
+			// const auto model_matches = this->check_model_id(metadata, std::move(port));
+			// std::cerr << "check_model_id: " << model_matches << std::endl;
+			
+			switch (metadata.device) {
+				case HexFile::DEV_MK3:
+					this->prepare_mk3(avrdude, port);
+				break;
 
-			this->cancelled = true;
-			cancel = true;
+				case HexFile::DEV_MM_CONTROL:
+					this->prepare_mm_control(avrdude, port);
+				break;
+
+				default:
+					this->prepare_mk2(avrdude, port);
+				break;
+			}
+
+			// this->cancelled = true;
+			// avrdude.cancel();
 		})
 		.on_message(std::move([q, extra_verbose](const char *msg, unsigned /* size */) {
 			if (extra_verbose) {
