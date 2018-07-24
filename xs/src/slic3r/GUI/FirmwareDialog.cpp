@@ -1,7 +1,7 @@
-#include <iostream>   // XXX
 #include <numeric>
 #include <algorithm>
 #include <thread>
+#include <stdexcept>
 #include <boost/format.hpp>
 #include <boost/asio.hpp>
 #include <boost/filesystem/path.hpp>
@@ -11,6 +11,7 @@
 #include "libslic3r/Utils.hpp"
 #include "avrdude/avrdude-slic3r.hpp"
 #include "GUI.hpp"
+#include "MsgDialog.hpp"
 #include "../Utils/HexFile.hpp"
 #include "../Utils/Serial.hpp"
 
@@ -52,6 +53,7 @@ enum AvrdudeEvent
 	AE_MESSAGE,
 	AE_PROGRESS,
 	AE_EXIT,
+	AE_ERROR,
 };
 
 wxDECLARE_EVENT(EVT_AVRDUDE, wxCommandEvent);
@@ -64,7 +66,6 @@ struct FirmwareDialog::priv
 {
 	enum AvrDudeComplete
 	{
-		AC_NONE,
 		AC_SUCCESS,
 		AC_FAILURE,
 		AC_CANCEL,
@@ -111,7 +112,7 @@ struct FirmwareDialog::priv
 	void find_serial_ports();
 	void flashing_start(unsigned tasks);
 	void flashing_done(AvrDudeComplete complete);
-	bool check_model_id(const HexFile &metadata, std::string port);
+	void check_model_id(const HexFile &metadata, const SerialPortInfo &port);
 
 	void prepare_common(AvrDude &, const SerialPortInfo &port);
 	void prepare_mk2(AvrDude &, const SerialPortInfo &port);
@@ -121,6 +122,7 @@ struct FirmwareDialog::priv
 
 	void cancel();
 	void on_avrdude(const wxCommandEvent &evt);
+	void ensure_joined();
 };
 
 void FirmwareDialog::priv::find_serial_ports()
@@ -181,14 +183,15 @@ void FirmwareDialog::priv::flashing_done(AvrDudeComplete complete)
 	}
 }
 
-bool FirmwareDialog::priv::check_model_id(const HexFile &metadata, std::string port)
+void FirmwareDialog::priv::check_model_id(const HexFile &metadata, const SerialPortInfo &port)
 {
 	if (metadata.model_id.empty()) {
-		return false;
+		// No data to check against
+		return;
 	}
 
 	asio::io_service io;
-	Serial serial(io, port, 115200);
+	Serial serial(io, port.port, 115200);
 	serial.printer_setup();
 
 	enum {
@@ -197,23 +200,28 @@ bool FirmwareDialog::priv::check_model_id(const HexFile &metadata, std::string p
 	};
 
 	if (! serial.printer_ready_wait(RETREIES, TIMEOUT)) {
-		return false;
+		throw wxString::Format(_(L("Could not connect to the printer at %s")), port.port);
 	}
 
 	std::string line;
 	error_code ec;
-	for (unsigned retries = RETREIES; retries > 0; retries--) {
-		serial.printer_write_line("PRUSA Rev");
+	serial.printer_write_line("PRUSA Rev");
+	while (serial.read_line(TIMEOUT, line, ec)) {
+		if (ec) { throw wxString::Format(_(L("Could not connect to the printer at %s")), port.port); }
+		if (line == "ok") { continue; }
 
-		while (serial.read_line(TIMEOUT, line, ec)) {
-			if (line == metadata.model_id) {
-				return true;
-			}
-			line.clear();
+		if (line == metadata.model_id) {
+			return;
+		} else {
+			throw wxString::Format(_(L(
+				"The firmware hex file does not match the printer model.\n"
+				"The hex file is intended for:\n  %s\n"
+				"Printer reports:\n  %s"
+			)), metadata.model_id, line);
 		}
-	}
 
-	return false;
+		line.clear();
+	}
 }
 
 void FirmwareDialog::priv::prepare_common(AvrDude &avrdude, const SerialPortInfo &port)
@@ -286,9 +294,8 @@ void FirmwareDialog::priv::prepare_mm_control(AvrDude &avrdude, const SerialPort
 	if (! port.id_match(0x2c99, 3)) {
 		if (! port.id_match(0x2c99, 4)) {
 			// This is not a Prusa MMU 2.0 device
-			// FIXME: error out
 			BOOST_LOG_TRIVIAL(error) << boost::format("Not a Prusa MMU 2.0 device: `%1%`") % port.port;
-			return;
+			throw wxString::Format(_(L("The device at `%s` is not am Original Prusa i3 MMU 2.0 device")), port.port);
 		}
 
 		BOOST_LOG_TRIVIAL(info) << boost::format("Found VID/PID 0x2c99/4 at `%1%`, rebooting the device ...") % port.port;
@@ -314,15 +321,13 @@ void FirmwareDialog::priv::prepare_mm_control(AvrDude &avrdude, const SerialPort
 		}
 
 		if (hits == 0) {
-			// FIXME: error out
 			BOOST_LOG_TRIVIAL(error) << "No VID/PID 0x2c99/3 device found after rebooting the MMU 2.0";
-			return;
+			throw wxString::Format(_(L("Failed to reboot the device at `%s` for programming")), port.port);
 		} else if (hits > 1) {
 			// We found multiple 0x2c99/3 devices, this is bad, because there's no way to find out
 			// which one is the one user wants to flash.
-			// FIXME: error out
 			BOOST_LOG_TRIVIAL(error) << "Several VID/PID 0x2c99/3 devices found after rebooting the MMU 2.0";
-			return;
+			throw wxString::Format(_(L("Multiple Original Prusa i3 MMU 2.0 devices found. Please only connect one at a time for flashing.")), port.port);
 		}
 	}
 
@@ -351,7 +356,6 @@ void FirmwareDialog::priv::prepare_mm_control(AvrDude &avrdude, const SerialPort
 
 void FirmwareDialog::priv::perform_upload()
 {
-	// hex_picker->SetPath("/home/vojta/prog/prusa/w-fwupdater/scratch/MM-control-01/MM-control-meta.hex"); // XXX
 	auto filename = hex_picker->GetPath();
 	if (filename.IsEmpty()) { return; }
 
@@ -378,27 +382,36 @@ void FirmwareDialog::priv::perform_upload()
 
 	this->avrdude = avrdude
 		.on_run([this, metadata, port](AvrDude &avrdude) {
-			// TODO: model_id check
+			auto queue_error = [&](wxString message) {
+				avrdude.cancel();
 
-			// const auto model_matches = this->check_model_id(metadata, std::move(port));
-			// std::cerr << "check_model_id: " << model_matches << std::endl;
-			
-			switch (metadata.device) {
+				auto evt = new wxCommandEvent(EVT_AVRDUDE, this->q->GetId());
+				evt->SetExtraLong(AE_ERROR);
+				evt->SetString(std::move(message));
+				wxQueueEvent(this->q, evt);
+			};
+
+			try {
+				switch (metadata.device) {
 				case HexFile::DEV_MK3:
+					this->check_model_id(metadata, port);
 					this->prepare_mk3(avrdude, port);
-				break;
+					break;
 
 				case HexFile::DEV_MM_CONTROL:
+					this->check_model_id(metadata, port);
 					this->prepare_mm_control(avrdude, port);
-				break;
+					break;
 
 				default:
 					this->prepare_mk2(avrdude, port);
-				break;
+					break;
+				}
+			} catch (const wxString &message) {
+				queue_error(message);
+			} catch (const std::exception &ex) {
+				queue_error(wxString::Format(_(L("Error accessing port at %s: %s")), port.port, ex.what()));
 			}
-
-			// this->cancelled = true;
-			// avrdude.cancel();
 		})
 		.on_message(std::move([q, extra_verbose](const char *msg, unsigned /* size */) {
 			if (extra_verbose) {
@@ -470,16 +483,29 @@ void FirmwareDialog::priv::on_avrdude(const wxCommandEvent &evt)
 
 		complete_kind = cancelled ? AC_CANCEL : (evt.GetInt() == 0 ? AC_SUCCESS : AC_FAILURE);
 		flashing_done(complete_kind);
+		ensure_joined();
+		break;
 
-		// Make sure the background thread is collected and the AvrDude object reset
-		if (avrdude) { avrdude->join(); }
-		avrdude.reset();
-
+	case AE_ERROR:
+		txt_stdout->AppendText(evt.GetString());
+		flashing_done(AC_FAILURE);
+		ensure_joined();
+		{
+			GUI::ErrorDialog dlg(this->q, evt.GetString());
+			dlg.ShowModal();
+		}
 		break;
 
 	default:
 		break;
 	}
+}
+
+void FirmwareDialog::priv::ensure_joined()
+{
+	// Make sure the background thread is collected and the AvrDude object reset
+	if (avrdude) { avrdude->join(); }
+	avrdude.reset();
 }
 
 
