@@ -172,6 +172,8 @@ std::vector<SerialPortInfo> scan_serial_ports_extended()
 					if (result) {
 						SerialPortInfo port_info;
 						port_info.port = path;
+
+						// Attempt to read out the device friendly name
 						if ((cf_property = IORegistryEntrySearchCFProperty(port, kIOServicePlane,
 						         CFSTR("USB Interface Name"), kCFAllocatorDefault,
 						         kIORegistryIterateRecursively | kIORegistryIterateParents)) ||
@@ -191,9 +193,25 @@ std::vector<SerialPortInfo> scan_serial_ports_extended()
 							}
 							CFRelease(cf_property);
 						}
-						// TODO: get vid/pid
 						if (port_info.friendly_name.empty())
 							port_info.friendly_name = port_info.port;
+
+						// Attempt to read out the VID & PID
+						int vid, pid;
+						auto cf_vendor = IORegistryEntrySearchCFProperty(port, kIOServicePlane, CFSTR("idVendor"),
+							kCFAllocatorDefault, kIORegistryIterateRecursively | kIORegistryIterateParents);
+						auto cf_product = IORegistryEntrySearchCFProperty(port, kIOServicePlane, CFSTR("idProduct"),
+							kCFAllocatorDefault, kIORegistryIterateRecursively | kIORegistryIterateParents);
+						if (cf_vendor && cf_product) {
+							if (CFNumberGetValue((CFNumberRef)cf_vendor, kCFNumberIntType, &vid) &&
+								CFNumberGetValue((CFNumberRef)cf_product, kCFNumberIntType, &pid)) {
+								port_info.id_vendor = vid;
+								port_info.id_product = pid;
+							}
+						}
+						if (cf_vendor) { CFRelease(cf_vendor); }
+						if (cf_product) { CFRelease(cf_product); }
+
 						output.emplace_back(std::move(port_info));
 					}
 				}
