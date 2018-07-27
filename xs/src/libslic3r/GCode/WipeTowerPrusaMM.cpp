@@ -41,7 +41,8 @@ namespace PrusaMultiMaterial {
 class Writer
 {
 public:
-	Writer(float layer_height, float line_width) :
+	Writer(float layer_height, float line_width, const WipeTower::xy& wipe_tower_pos) :
+        m_wipe_tower_pos(wipe_tower_pos),
 		m_current_pos(std::numeric_limits<float>::max(), std::numeric_limits<float>::max()),
 		m_current_z(0.f),
 		m_current_feedrate(0.f),
@@ -68,8 +69,12 @@ public:
             return *this;
     }
 
-	Writer& 			 set_initial_position(const WipeTower::xy &pos) { 
-		m_start_pos = WipeTower::xy(pos,0.f,m_y_shift).rotate(m_wipe_tower_pos, m_wipe_tower_width, m_wipe_tower_depth, m_angle_deg);
+	Writer& 			 set_initial_position(const WipeTower::xy &pos, float width = 0.f, float depth = 0.f, float internal_angle = 0.f, float rotation_angle = 0.f) {
+        m_wipe_tower_width = width;
+        m_wipe_tower_depth = depth;
+        m_internal_angle = internal_angle;
+        m_rotation_angle = rotation_angle;
+		m_start_pos = pos.rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle).rotate(m_rotation_angle) + m_wipe_tower_pos;
 		m_current_pos = pos;
 		return *this;
 	}
@@ -82,8 +87,8 @@ public:
 	Writer& 			 set_extrusion_flow(float flow)
 		{ m_extrusion_flow = flow; return *this; }
 		
-	Writer&				 set_rotation(WipeTower::xy& pos, float width, float depth, float angle)
-		{ m_wipe_tower_pos = pos; m_wipe_tower_width = width; m_wipe_tower_depth=depth; m_angle_deg = angle; return (*this); }
+	//Writer&				 set_rotation(float width, float depth, float internal_angle, float rotation_angle)
+		//{ m_wipe_tower_width = width; m_wipe_tower_depth=depth; m_internal_angle = internal_angle; m_rotation_angle = rotation_angle; return (*this); }
 
 	Writer&				 set_y_shift(float shift) {
         m_current_pos.y -= shift-m_y_shift;
@@ -110,7 +115,7 @@ public:
 	float                y()     const { return m_current_pos.y; }
 	const WipeTower::xy& pos()   const { return m_current_pos; }
 	const WipeTower::xy	 start_pos_rotated() const { return m_start_pos; }
-	const WipeTower::xy  pos_rotated() const { return WipeTower::xy(m_current_pos,0.f,m_y_shift).rotate(m_wipe_tower_pos, m_wipe_tower_width, m_wipe_tower_depth, m_angle_deg); }
+	const WipeTower::xy  pos_rotated() const { return WipeTower::xy(m_current_pos,0.f,m_y_shift).rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle).rotate(m_rotation_angle) + m_wipe_tower_pos; }
 	float 				 elapsed_time() const { return m_elapsed_time; }
 
 	// Extrude with an explicitely provided amount of extrusion.
@@ -125,9 +130,13 @@ public:
 		double len = sqrt(dx*dx+dy*dy);
 
 
-		// For rotated wipe tower, transform position to printer coordinates
-		WipeTower::xy rotated_current_pos(WipeTower::xy(m_current_pos,0.f,m_y_shift).rotate(m_wipe_tower_pos, m_wipe_tower_width, m_wipe_tower_depth, m_angle_deg)); // this is where we are
-		WipeTower::xy rot(WipeTower::xy(x,y+m_y_shift).rotate(m_wipe_tower_pos, m_wipe_tower_width, m_wipe_tower_depth, m_angle_deg));                               // this is where we want to go
+		// Now do the "internal rotation" with respect to the wipe tower center
+		WipeTower::xy rotated_current_pos(WipeTower::xy(m_current_pos,0.f,m_y_shift).rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle)); // this is where we are
+		WipeTower::xy rot(WipeTower::xy(x,y+m_y_shift).rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle));                               // this is where we want to go
+
+        // Now we have to rotate around origin (bottom-left corner) and shift it to the desired position
+        rotated_current_pos = rotated_current_pos.rotate(m_rotation_angle) + m_wipe_tower_pos;
+        rot = rot.rotate(m_rotation_angle) + m_wipe_tower_pos;
 
 		if (! m_preview_suppressed && e > 0.f && len > 0.) {
 			// Width of a squished extrusion, corrected for the roundings of the squished extrusions.
@@ -146,6 +155,7 @@ public:
 
 		if (std::abs(rot.y - rotated_current_pos.y) > EPSILON)
 			m_gcode += set_format_Y(rot.y);
+
 
 		if (e != 0.f)
 			m_gcode += set_format_E(e);
@@ -397,9 +407,10 @@ private:
 	std::string   m_gcode;
 	std::vector<WipeTower::Extrusion> m_extrusions;
 	float         m_elapsed_time;
-	float   	  m_angle_deg = 0.f;
+    float         m_rotation_angle = 0.f;
+	float   	  m_internal_angle = 0.f;
 	float		  m_y_shift = 0.f;
-	WipeTower::xy m_wipe_tower_pos;
+	const WipeTower::xy m_wipe_tower_pos;
 	float 		  m_wipe_tower_width = 0.f;
 	float		  m_wipe_tower_depth = 0.f;
 	float		  m_last_fan_speed = 0.f;
@@ -492,7 +503,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::prime(
 	const float prime_section_width = std::min(240.f / tools.size(), 60.f);
 	box_coordinates cleaning_box(xy(5.f, 0.01f + m_perimeter_width/2.f), prime_section_width, 100.f);
 
-	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width);
+	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width, WipeTower::xy(0.f, 0.f));
 	writer.set_extrusion_flow(m_extrusion_flow)
 		  .set_z(m_z_pos)
 		  .set_initial_tool(m_current_tool)
@@ -575,16 +586,15 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::tool_change(unsigned int tool, boo
 	}
 
 	box_coordinates cleaning_box(
-		m_wipe_tower_pos + xy(m_perimeter_width / 2.f, m_perimeter_width / 2.f),
+		xy(m_perimeter_width / 2.f, m_perimeter_width / 2.f),
 		m_wipe_tower_width - m_perimeter_width,
 		(tool != (unsigned int)(-1) ? /*m_layer_info->depth*/wipe_area+m_depth_traversed-0.5*m_perimeter_width
                                     : m_wipe_tower_depth-m_perimeter_width));
 
-	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width);
+	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width, m_wipe_tower_pos);
 	writer.set_extrusion_flow(m_extrusion_flow)
 		.set_z(m_z_pos)
 		.set_initial_tool(m_current_tool)
-		.set_rotation(m_wipe_tower_pos, m_wipe_tower_width, m_wipe_tower_depth, m_wipe_tower_rotation_angle)
 		.set_y_shift(m_y_shift + (tool!=(unsigned int)(-1) && (m_current_shape == SHAPE_REVERSED && !m_peters_wipe_tower) ? m_layer_info->depth - m_layer_info->toolchanges_depth(): 0.f))
 		.append(";--------------------\n"
 				"; CP TOOLCHANGE START\n")
@@ -594,7 +604,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::tool_change(unsigned int tool, boo
 		.speed_override(100);
 
 	xy initial_position = cleaning_box.ld + WipeTower::xy(0.f,m_depth_traversed);
-    writer.set_initial_position(initial_position);
+    writer.set_initial_position(initial_position, m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation, m_wipe_tower_rotation_angle);
 
     // Increase the extruder driver current to allow fast ramming.
     writer.set_extruder_trimpot(750);
@@ -616,11 +626,11 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::tool_change(unsigned int tool, boo
     if (last_change_in_layer) {// draw perimeter line
         writer.set_y_shift(m_y_shift);
         if (m_peters_wipe_tower)
-            writer.rectangle(m_wipe_tower_pos,m_layer_info->depth + 3*m_perimeter_width,m_wipe_tower_depth);
+            writer.rectangle(WipeTower::xy(0.f, 0.f),m_layer_info->depth + 3*m_perimeter_width,m_wipe_tower_depth);
         else {
-            writer.rectangle(m_wipe_tower_pos,m_wipe_tower_width, m_layer_info->depth + m_perimeter_width);
+            writer.rectangle(WipeTower::xy(0.f, 0.f),m_wipe_tower_width, m_layer_info->depth + m_perimeter_width);
             if (layer_finished()) { // no finish_layer will be called, we must wipe the nozzle
-                writer.travel(m_wipe_tower_pos.x + (writer.x()> (m_wipe_tower_pos.x + m_wipe_tower_width) / 2.f ? 0.f : m_wipe_tower_width), writer.y());
+                writer.travel(writer.x()> m_wipe_tower_width / 2.f ? 0.f : m_wipe_tower_width, writer.y());
             }
         }
     }
@@ -647,20 +657,19 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::tool_change(unsigned int tool, boo
 WipeTower::ToolChangeResult WipeTowerPrusaMM::toolchange_Brim(bool sideOnly, float y_offset)
 {
 	const box_coordinates wipeTower_box(
-		m_wipe_tower_pos,
+		WipeTower::xy(0.f, 0.f),
 		m_wipe_tower_width,
 		m_wipe_tower_depth);
 
-	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width);
+	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width, m_wipe_tower_pos);
 	writer.set_extrusion_flow(m_extrusion_flow * 1.1f)
 		  .set_z(m_z_pos) // Let the writer know the current Z position as a base for Z-hop.
 		  .set_initial_tool(m_current_tool)
-  		  .set_rotation(m_wipe_tower_pos, m_wipe_tower_width, m_wipe_tower_depth, m_wipe_tower_rotation_angle)
 		  .append(";-------------------------------------\n"
 				  "; CP WIPE TOWER FIRST LAYER BRIM START\n");
 
 	xy initial_position = wipeTower_box.lu - xy(m_perimeter_width * 6.f, 0);
-	writer.set_initial_position(initial_position);
+	writer.set_initial_position(initial_position, m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation, m_wipe_tower_rotation_angle);
 
     writer.extrude_explicit(wipeTower_box.ld - xy(m_perimeter_width * 6.f, 0), // Prime the extruder left of the wipe tower.
         1.5f * m_extrusion_flow * (wipeTower_box.lu.y - wipeTower_box.ld.y), 2400);
@@ -724,7 +733,7 @@ void WipeTowerPrusaMM::toolchange_Unload(
     if (m_layer_info > m_plan.begin() && m_layer_info < m_plan.end() && (m_layer_info-1!=m_plan.begin() || !m_adhesion )) {
 
         // this is y of the center of previous sparse infill border
-        float sparse_beginning_y = m_wipe_tower_pos.y;
+        float sparse_beginning_y = 0.f;
         if (m_current_shape == SHAPE_REVERSED)
             sparse_beginning_y += ((m_layer_info-1)->depth - (m_layer_info-1)->toolchanges_depth())
                                       - ((m_layer_info)->depth-(m_layer_info)->toolchanges_depth()) ;
@@ -742,7 +751,7 @@ void WipeTowerPrusaMM::toolchange_Unload(
         for (const auto& tch : m_layer_info->tool_changes) {  // let's find this toolchange
             if (tch.old_tool == m_current_tool) {
                 sum_of_depths += tch.ramming_depth;
-                float ramming_end_y = m_wipe_tower_pos.y + sum_of_depths;
+                float ramming_end_y = sum_of_depths;
                 ramming_end_y -= (y_step/m_extra_spacing-m_perimeter_width) / 2.f;   // center of final ramming line
 
                 // debugging:
@@ -950,7 +959,7 @@ void WipeTowerPrusaMM::toolchange_Wipe(
     if (m_layer_info != m_plan.end() && m_current_tool != m_layer_info->tool_changes.back().new_tool) {
         m_left_to_right = !m_left_to_right;
         writer.travel(writer.x(), writer.y() - dy)
-        .travel(m_wipe_tower_pos.x + (m_left_to_right ? m_wipe_tower_width : 0.f), writer.y());
+        .travel(m_left_to_right ? m_wipe_tower_width : 0.f, writer.y());
     }
 
 	writer.set_extrusion_flow(m_extrusion_flow); // Reset the extrusion flow.
@@ -965,11 +974,10 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::finish_layer()
 	// Otherwise the caller would likely travel to the wipe tower in vain.
 	assert(! this->layer_finished());
 
-	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width);
+	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width, m_wipe_tower_pos);
 	writer.set_extrusion_flow(m_extrusion_flow)
 		.set_z(m_z_pos)
 		.set_initial_tool(m_current_tool)
-		.set_rotation(m_wipe_tower_pos, m_wipe_tower_width, m_wipe_tower_depth, m_wipe_tower_rotation_angle)
 		.set_y_shift(m_y_shift - (m_current_shape == SHAPE_REVERSED && !m_peters_wipe_tower ? m_layer_info->toolchanges_depth() : 0.f))
 		.append(";--------------------\n"
 				"; CP EMPTY GRID START\n")
@@ -978,14 +986,12 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::finish_layer()
 	// Slow down on the 1st layer.
 	float speed_factor = m_is_first_layer ? 0.5f : 1.f;
 	float current_depth = m_layer_info->depth - m_layer_info->toolchanges_depth();
-	box_coordinates fill_box(m_wipe_tower_pos + xy(m_perimeter_width, m_depth_traversed + m_perimeter_width),
+	box_coordinates fill_box(xy(m_perimeter_width, m_depth_traversed + m_perimeter_width),
 							 m_wipe_tower_width - 2 * m_perimeter_width, current_depth-m_perimeter_width);
 
-    if (m_left_to_right) // so there is never a diagonal travel
-        writer.set_initial_position(fill_box.ru);
-    else
-        writer.set_initial_position(fill_box.lu);
 
+    writer.set_initial_position((m_left_to_right ? fill_box.ru : fill_box.lu), // so there is never a diagonal travel
+                                 m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation, m_wipe_tower_rotation_angle);
 
 	box_coordinates box = fill_box;
     for (int i=0;i<2;++i) {
@@ -1165,9 +1171,9 @@ void WipeTowerPrusaMM::generate(std::vector<std::vector<WipeTower::ToolChangeRes
 	{
 		set_layer(layer.z,layer.height,0,layer.z == m_plan.front().z,layer.z == m_plan.back().z);
 		if (m_peters_wipe_tower)
-			m_wipe_tower_rotation_angle += 90.f;
+			m_internal_rotation += 90.f;
 		else
-            m_wipe_tower_rotation_angle += 180.f;
+            m_internal_rotation += 180.f;
 
 		if (!m_peters_wipe_tower && m_layer_info->depth < m_wipe_tower_depth - m_perimeter_width)
 			m_y_shift = (m_wipe_tower_depth-m_layer_info->depth-m_perimeter_width)/2.f;

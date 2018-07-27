@@ -654,7 +654,7 @@ int GLVolumeCollection::load_wipe_tower_preview(
         height = 0.1f;
 
     auto mesh = make_cube(width, depth, height);
-    mesh.translate(-width / 2.f, -depth / 2.f, 0.f);
+    // mesh.translate(-width / 2.f, -depth / 2.f, 0.f);
     Point origin_of_rotation(0.f, 0.f);
     mesh.rotate(rotation_angle,&origin_of_rotation);
 
