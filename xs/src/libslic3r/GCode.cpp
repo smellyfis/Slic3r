@@ -166,6 +166,18 @@ static inline Point wipe_tower_point_to_object_point(GCode &gcodegen, const Wipe
 std::string WipeTowerIntegration::append_tcr(GCode &gcodegen, const WipeTower::ToolChangeResult &tcr, int new_extruder_id) const
 {
     std::string gcode;
+    
+    Pointf wipe_tower_pos(m_wipe_tower_pos.x, m_wipe_tower_pos.y);
+    float alpha = m_wipe_tower_rotation/180.f * M_PI;
+    Pointf start_point(tcr.start_pos.x, tcr.start_pos.y);
+    Pointf end_point(tcr.end_pos.x, tcr.end_pos.y);
+    start_point.rotate(alpha);
+    start_point.translate(wipe_tower_pos);
+    end_point.rotate(alpha);
+    end_point.translate(wipe_tower_pos);
+    WipeTower::xy start_pos(start_point.x, start_point.y);
+    WipeTower::xy end_pos(end_point.x, end_point.y);
+    
 
     // Disable linear advance for the wipe tower operations.
     gcode += "M900 K0\n";
@@ -174,7 +186,7 @@ std::string WipeTowerIntegration::append_tcr(GCode &gcodegen, const WipeTower::T
     gcode += gcodegen.retract(true);
     gcodegen.m_avoid_crossing_perimeters.use_external_mp_once = true;
     gcode += gcodegen.travel_to(
-        wipe_tower_point_to_object_point(gcodegen, tcr.start_pos),
+        wipe_tower_point_to_object_point(gcodegen, start_pos),
         erMixed,
         "Travel to a Wipe Tower");
     gcode += gcodegen.unretract();
@@ -195,24 +207,81 @@ std::string WipeTowerIntegration::append_tcr(GCode &gcodegen, const WipeTower::T
         check_add_eol(gcode);
     }
     // A phony move to the end position at the wipe tower.
-    gcodegen.writer().travel_to_xy(Pointf(tcr.end_pos.x, tcr.end_pos.y));
-    gcodegen.set_last_pos(wipe_tower_point_to_object_point(gcodegen, tcr.end_pos));
+    gcodegen.writer().travel_to_xy(Pointf(end_pos.x, end_pos.y));
+    gcodegen.set_last_pos(wipe_tower_point_to_object_point(gcodegen, end_pos));
 
     // Prepare a future wipe.
     gcodegen.m_wipe.path.points.clear();
     if (new_extruder_id >= 0) {
         // Start the wipe at the current position.
-        gcodegen.m_wipe.path.points.emplace_back(wipe_tower_point_to_object_point(gcodegen, tcr.end_pos));
+        gcodegen.m_wipe.path.points.emplace_back(wipe_tower_point_to_object_point(gcodegen, end_pos));
         // Wipe end point: Wipe direction away from the closer tower edge to the further tower edge.
         gcodegen.m_wipe.path.points.emplace_back(wipe_tower_point_to_object_point(gcodegen, 
-            WipeTower::xy((std::abs(m_left - tcr.end_pos.x) < std::abs(m_right - tcr.end_pos.x)) ? m_right : m_left,
-            tcr.end_pos.y)));
+            WipeTower::xy((std::abs(m_left - end_pos.x) < std::abs(m_right - end_pos.x)) ? m_right : m_left,
+            end_pos.y)));
     }
 
     // Let the planner know we are traveling between objects.
     gcodegen.m_avoid_crossing_perimeters.use_external_mp_once = true;
+    rotate_gcode_moves(gcode, start_point, wipe_tower_pos, alpha);
     return gcode;
 }
+
+void WipeTowerIntegration::rotate_gcode_moves(std::string& gcode, Pointf start_pos, Pointf wipe_tower_pos, float angle) const
+{
+    std::string line;
+    std::string newline;
+    size_t index1 = 0;
+    size_t index2 = 0;
+    float x = 0.f;
+    float y = 0.f; // TODO: Initialize with start_pos
+    std::cout << "STARY GKOD:" << std::endl << gcode << std::endl;
+    while (true) {
+        index2 = gcode.find("\n", index1);
+        if (index2 == std::string::npos)
+            break;
+        line = gcode.substr(index1, index2-index1);
+        Pointf gcode_pos(x,y);
+
+        if (line.find("G1") == 0) {
+            std::istringstream in(line);
+            in >> std::noskipws;
+            std::ostringstream out;
+            char ch = 0;
+            while (in >> ch) {
+                out << ch;
+                if (ch == 'X') {
+                    in >> gcode_pos.x;
+                    out << "__x__";
+                }
+                else
+                    if (ch == 'Y') {
+                        in >> gcode_pos.y;
+                        out << "__y__";
+                    }                    
+            }
+
+            gcode_pos.rotate(angle);
+            gcode_pos.translate(wipe_tower_pos);
+            
+            // TODO: std::to_string does not allow changing float precision
+            line = out.str();
+            std::cout << line << std::endl;
+            if (line.find("__x__") != std::string::npos)
+                line.replace(line.find("__x__"), 5, std::to_string(gcode_pos.x));
+            if (line.find("__y__") != std::string::npos)
+                line.replace(line.find("__y__"), 5, std::to_string(gcode_pos.y));
+        }
+
+        //std::cout << line << std::endl << std::endl;
+        gcode.replace(index1, index2-index1, line);
+        index1 = index2 + 1;
+    }
+    std::cout << "NOVY GKOD:" << std::endl << gcode << std::endl << std::endl << std::endl;
+    //while (1) { index2 += 1; }
+}
+
+
 
 std::string WipeTowerIntegration::prime(GCode &gcodegen)
 {

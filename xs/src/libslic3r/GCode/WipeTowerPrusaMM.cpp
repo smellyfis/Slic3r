@@ -41,8 +41,7 @@ namespace PrusaMultiMaterial {
 class Writer
 {
 public:
-	Writer(float layer_height, float line_width, const WipeTower::xy& wipe_tower_pos) :
-        m_wipe_tower_pos(wipe_tower_pos),
+	Writer(float layer_height, float line_width) :
 		m_current_pos(std::numeric_limits<float>::max(), std::numeric_limits<float>::max()),
 		m_current_z(0.f),
 		m_current_feedrate(0.f),
@@ -69,12 +68,11 @@ public:
             return *this;
     }
 
-	Writer& 			 set_initial_position(const WipeTower::xy &pos, float width = 0.f, float depth = 0.f, float internal_angle = 0.f, float rotation_angle = 0.f) {
+	Writer& 			 set_initial_position(const WipeTower::xy &pos, float width = 0.f, float depth = 0.f, float internal_angle = 0.f) {
         m_wipe_tower_width = width;
         m_wipe_tower_depth = depth;
         m_internal_angle = internal_angle;
-        m_rotation_angle = rotation_angle;
-		m_start_pos = pos.rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle).rotate(m_rotation_angle) + m_wipe_tower_pos;
+		m_start_pos = pos.rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle);
 		m_current_pos = pos;
 		return *this;
 	}
@@ -86,9 +84,6 @@ public:
 
 	Writer& 			 set_extrusion_flow(float flow)
 		{ m_extrusion_flow = flow; return *this; }
-		
-	//Writer&				 set_rotation(float width, float depth, float internal_angle, float rotation_angle)
-		//{ m_wipe_tower_width = width; m_wipe_tower_depth=depth; m_internal_angle = internal_angle; m_rotation_angle = rotation_angle; return (*this); }
 
 	Writer&				 set_y_shift(float shift) {
         m_current_pos.y -= shift-m_y_shift;
@@ -115,7 +110,7 @@ public:
 	float                y()     const { return m_current_pos.y; }
 	const WipeTower::xy& pos()   const { return m_current_pos; }
 	const WipeTower::xy	 start_pos_rotated() const { return m_start_pos; }
-	const WipeTower::xy  pos_rotated() const { return WipeTower::xy(m_current_pos,0.f,m_y_shift).rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle).rotate(m_rotation_angle) + m_wipe_tower_pos; }
+	const WipeTower::xy  pos_rotated() const { return WipeTower::xy(m_current_pos, 0.f, m_y_shift).rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle); }
 	float 				 elapsed_time() const { return m_elapsed_time; }
 
 	// Extrude with an explicitely provided amount of extrusion.
@@ -133,10 +128,6 @@ public:
 		// Now do the "internal rotation" with respect to the wipe tower center
 		WipeTower::xy rotated_current_pos(WipeTower::xy(m_current_pos,0.f,m_y_shift).rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle)); // this is where we are
 		WipeTower::xy rot(WipeTower::xy(x,y+m_y_shift).rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle));                               // this is where we want to go
-
-        // Now we have to rotate around origin (bottom-left corner) and shift it to the desired position
-        rotated_current_pos = rotated_current_pos.rotate(m_rotation_angle) + m_wipe_tower_pos;
-        rot = rot.rotate(m_rotation_angle) + m_wipe_tower_pos;
 
 		if (! m_preview_suppressed && e > 0.f && len > 0.) {
 			// Width of a squished extrusion, corrected for the roundings of the squished extrusions.
@@ -407,10 +398,8 @@ private:
 	std::string   m_gcode;
 	std::vector<WipeTower::Extrusion> m_extrusions;
 	float         m_elapsed_time;
-    float         m_rotation_angle = 0.f;
 	float   	  m_internal_angle = 0.f;
 	float		  m_y_shift = 0.f;
-	const WipeTower::xy m_wipe_tower_pos;
 	float 		  m_wipe_tower_width = 0.f;
 	float		  m_wipe_tower_depth = 0.f;
 	float		  m_last_fan_speed = 0.f;
@@ -503,7 +492,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::prime(
 	const float prime_section_width = std::min(240.f / tools.size(), 60.f);
 	box_coordinates cleaning_box(xy(5.f, 0.01f + m_perimeter_width/2.f), prime_section_width, 100.f);
 
-	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width, WipeTower::xy(0.f, 0.f));
+	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width);
 	writer.set_extrusion_flow(m_extrusion_flow)
 		  .set_z(m_z_pos)
 		  .set_initial_tool(m_current_tool)
@@ -591,7 +580,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::tool_change(unsigned int tool, boo
 		(tool != (unsigned int)(-1) ? /*m_layer_info->depth*/wipe_area+m_depth_traversed-0.5*m_perimeter_width
                                     : m_wipe_tower_depth-m_perimeter_width));
 
-	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width, m_wipe_tower_pos);
+	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width);
 	writer.set_extrusion_flow(m_extrusion_flow)
 		.set_z(m_z_pos)
 		.set_initial_tool(m_current_tool)
@@ -604,7 +593,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::tool_change(unsigned int tool, boo
 		.speed_override(100);
 
 	xy initial_position = cleaning_box.ld + WipeTower::xy(0.f,m_depth_traversed);
-    writer.set_initial_position(initial_position, m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation, m_wipe_tower_rotation_angle);
+    writer.set_initial_position(initial_position, m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation);
 
     // Increase the extruder driver current to allow fast ramming.
     writer.set_extruder_trimpot(750);
@@ -661,7 +650,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::toolchange_Brim(bool sideOnly, flo
 		m_wipe_tower_width,
 		m_wipe_tower_depth);
 
-	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width, m_wipe_tower_pos);
+	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width);
 	writer.set_extrusion_flow(m_extrusion_flow * 1.1f)
 		  .set_z(m_z_pos) // Let the writer know the current Z position as a base for Z-hop.
 		  .set_initial_tool(m_current_tool)
@@ -669,7 +658,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::toolchange_Brim(bool sideOnly, flo
 				  "; CP WIPE TOWER FIRST LAYER BRIM START\n");
 
 	xy initial_position = wipeTower_box.lu - xy(m_perimeter_width * 6.f, 0);
-	writer.set_initial_position(initial_position, m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation, m_wipe_tower_rotation_angle);
+	writer.set_initial_position(initial_position, m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation);
 
     writer.extrude_explicit(wipeTower_box.ld - xy(m_perimeter_width * 6.f, 0), // Prime the extruder left of the wipe tower.
         1.5f * m_extrusion_flow * (wipeTower_box.lu.y - wipeTower_box.ld.y), 2400);
@@ -974,7 +963,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::finish_layer()
 	// Otherwise the caller would likely travel to the wipe tower in vain.
 	assert(! this->layer_finished());
 
-	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width, m_wipe_tower_pos);
+	PrusaMultiMaterial::Writer writer(m_layer_height, m_perimeter_width);
 	writer.set_extrusion_flow(m_extrusion_flow)
 		.set_z(m_z_pos)
 		.set_initial_tool(m_current_tool)
@@ -991,7 +980,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::finish_layer()
 
 
     writer.set_initial_position((m_left_to_right ? fill_box.ru : fill_box.lu), // so there is never a diagonal travel
-                                 m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation, m_wipe_tower_rotation_angle);
+                                 m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation);
 
 	box_coordinates box = fill_box;
     for (int i=0;i<2;++i) {
