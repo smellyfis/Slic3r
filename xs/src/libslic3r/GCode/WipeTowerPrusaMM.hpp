@@ -102,6 +102,8 @@ public:
 	// Iterates through prepared m_plan, generates ToolChangeResults and appends them to "result"
 	void generate(std::vector<std::vector<WipeTower::ToolChangeResult>> &result);
 
+    float get_depth() const { return m_wipe_tower_depth; }
+
 
 
 	// Switch to a next layer.
