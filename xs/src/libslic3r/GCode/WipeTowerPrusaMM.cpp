@@ -5,7 +5,7 @@ TODO LIST
 
 1. cooling moves - DONE
 2. account for perimeter and finish_layer extrusions and subtract it from last wipe - DONE
-3. priming extrusions (last wipe must clear the color)
+3. priming extrusions (last wipe must clear the color) - DONE
 4. Peter's wipe tower - layer's are not exactly square
 5. Peter's wipe tower - variable width for higher levels
 6. Peter's wipe tower - make sure it is not too sparse (apply max_bridge_distance and make last wipe longer)
@@ -17,7 +17,6 @@ TODO LIST
 
 #include <assert.h>
 #include <math.h>
-#include <fstream>
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -539,6 +538,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::prime(
 	m_print_brim = true;
 
 	ToolChangeResult result;
+    result.priming      = true;
 	result.print_z 	  	= this->m_z_pos;
 	result.layer_height = this->m_layer_height;
 	result.gcode   	  	= writer.gcode();
@@ -633,6 +633,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::tool_change(unsigned int tool, boo
                   "\n\n");
 
 	ToolChangeResult result;
+    result.priming      = false;
 	result.print_z 	  	= this->m_z_pos;
 	result.layer_height = this->m_layer_height;
 	result.gcode   	  	= writer.gcode();
@@ -683,6 +684,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::toolchange_Brim(bool sideOnly, flo
     m_print_brim = false;  // Mark the brim as extruded
 
 	ToolChangeResult result;
+    result.priming      = false;
 	result.print_z 	  	= this->m_z_pos;
 	result.layer_height = this->m_layer_height;
 	result.gcode   	  	= writer.gcode();
@@ -1039,6 +1041,7 @@ WipeTower::ToolChangeResult WipeTowerPrusaMM::finish_layer()
     m_depth_traversed = m_wipe_tower_depth-m_perimeter_width;
 
 	ToolChangeResult result;
+    result.priming      = false;
 	result.print_z 	  	= this->m_z_pos;
 	result.layer_height = this->m_layer_height;
 	result.gcode   	  	= writer.gcode();

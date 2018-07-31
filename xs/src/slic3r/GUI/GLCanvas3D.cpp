@@ -2554,6 +2554,8 @@ void GLCanvas3D::load_wipe_tower_toolpaths(const std::vector<std::string>& str_t
     {
         const Print                 *print;
         const std::vector<float>    *tool_colors;
+        WipeTower::xy                wipe_tower_pos;
+        float                        wipe_tower_angle;
 
         // Number of vertices (each vertex is 6x4=24 bytes long)
         static const size_t          alloc_size_max() { return 131072; } // 3.15MB
@@ -2585,6 +2587,9 @@ void GLCanvas3D::load_wipe_tower_toolpaths(const std::vector<std::string>& str_t
         ctxt.priming.emplace_back(*m_print->m_wipe_tower_priming.get());
     if (m_print->m_wipe_tower_final_purge)
         ctxt.final.emplace_back(*m_print->m_wipe_tower_final_purge.get());
+
+    ctxt.wipe_tower_angle = ctxt.print->config.wipe_tower_rotation_angle.value/180.f * M_PI;
+    ctxt.wipe_tower_pos = WipeTower::xy(ctxt.print->config.wipe_tower_x.value, ctxt.print->config.wipe_tower_y.value);
 
     BOOST_LOG_TRIVIAL(debug) << "Loading wipe tower toolpaths in parallel - start";
 
@@ -2644,12 +2649,25 @@ void GLCanvas3D::load_wipe_tower_toolpaths(const std::vector<std::string>& str_t
                     lines.reserve(n_lines);
                     widths.reserve(n_lines);
                     heights.assign(n_lines, extrusions.layer_height);
+                    WipeTower::Extrusion e_prev = extrusions.extrusions[i-1];
+
+                    if (!extrusions.priming) { // wipe tower extrusions describe the wipe tower at the origin with no rotation
+                        e_prev.pos.rotate(ctxt.wipe_tower_angle);
+                        e_prev.pos.translate(ctxt.wipe_tower_pos);
+                    }
+
                     for (; i < j; ++i) {
-                        const WipeTower::Extrusion &e = extrusions.extrusions[i];
+                        WipeTower::Extrusion e = extrusions.extrusions[i];
                         assert(e.width > 0.f);
-                        const WipeTower::Extrusion &e_prev = *(&e - 1);
+                        if (!extrusions.priming) {
+                            e.pos.rotate(ctxt.wipe_tower_angle);
+                            e.pos.translate(ctxt.wipe_tower_pos);
+                        }
+
                         lines.emplace_back(Point::new_scale(e_prev.pos.x, e_prev.pos.y), Point::new_scale(e.pos.x, e.pos.y));
                         widths.emplace_back(e.width);
+
+                        e_prev = e;
                     }
                     _3DScene::thick_lines_to_verts(lines, widths, heights, lines.front().a == lines.back().b, extrusions.print_z,
                         *vols[ctxt.volume_idx(e.tool, 0)]);
@@ -3652,7 +3670,7 @@ void GLCanvas3D::_camera_tranform() const
     ::glMatrixMode(GL_MODELVIEW);
     ::glLoadIdentity();
 
-    ::glRotatef(-m_camera.get_theta(), 1.0f, 0.0f, 0.0f); // pitch
+    ::glRotatef(-m_camera.get_theta(), 1.0f, 0.0f, 0.0f); //Â pitch
     ::glRotatef(m_camera.phi, 0.0f, 0.0f, 1.0f);          // yaw
 
     Pointf3 neg_target = m_camera.target.negative();
@@ -4626,10 +4644,8 @@ void GLCanvas3D::_load_shells()
     coordf_t max_z = m_print->objects[0]->model_object()->get_model()->bounding_box().max.z;
     const PrintConfig& config = m_print->config;
     unsigned int extruders_count = config.nozzle_diameter.size();
-    if ((extruders_count > 1) && config.single_extruder_multi_material && config.wipe_tower && !config.complete_objects) {
-        const float width_per_extruder = 15.0f; // a simple workaround after wipe_tower_per_color_wipe got obsolete
-        m_volumes.load_wipe_tower_preview(1000, config.wipe_tower_x, config.wipe_tower_y, config.wipe_tower_width, width_per_extruder * (extruders_count - 1), max_z, config.wipe_tower_rotation_angle, m_use_VBOs && m_initialized);
-    }
+    if ((extruders_count > 1) && config.single_extruder_multi_material && config.wipe_tower && !config.complete_objects)
+        m_volumes.load_wipe_tower_preview(1000, config.wipe_tower_x, config.wipe_tower_y, config.wipe_tower_width, 15.f * (extruders_count - 1), max_z, config.wipe_tower_rotation_angle, m_use_VBOs && m_initialized);
 }
 
 void GLCanvas3D::_update_gcode_volumes_visibility(const GCodePreviewData& preview_data)
@@ -4696,7 +4712,7 @@ void GLCanvas3D::_on_move(const std::vector<int>& volume_idxs)
     if (m_model == nullptr)
         return;
 
-    std::set<std::string> done;  // prevent moving instances twice
+    std::set<std::string> done;  //Â prevent moving instances twice
     bool object_moved = false;
     Pointf3 wipe_tower_origin(0.0, 0.0, 0.0);
     for (int volume_idx : volume_idxs)
@@ -4705,7 +4721,7 @@ void GLCanvas3D::_on_move(const std::vector<int>& volume_idxs)
         int obj_idx = volume->object_idx();
         int instance_idx = volume->instance_idx();
 
-        // prevent moving instances twice
+        //Â prevent moving instances twice
         char done_id[64];
         ::sprintf(done_id, "%d_%d", obj_idx, instance_idx);
         if (done.find(done_id) != done.end())

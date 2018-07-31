@@ -166,17 +166,17 @@ static inline Point wipe_tower_point_to_object_point(GCode &gcodegen, const Wipe
 std::string WipeTowerIntegration::append_tcr(GCode &gcodegen, const WipeTower::ToolChangeResult &tcr, int new_extruder_id) const
 {
     std::string gcode;
-    
-    Pointf wipe_tower_pos(m_wipe_tower_pos.x, m_wipe_tower_pos.y);
+
+    // Toolchangeresult.gcode assumes the wipe tower corner is at the origin
+    // We want to rotate and shift all extrusions (gcode postprocessing) and starting and ending position
     float alpha = m_wipe_tower_rotation/180.f * M_PI;
-    Pointf start_point(tcr.start_pos.x, tcr.start_pos.y);
-    Pointf end_point(tcr.end_pos.x, tcr.end_pos.y);
-    start_point.rotate(alpha);
-    start_point.translate(wipe_tower_pos);
-    end_point.rotate(alpha);
-    end_point.translate(wipe_tower_pos);
-    WipeTower::xy start_pos(start_point.x, start_point.y);
-    WipeTower::xy end_pos(end_point.x, end_point.y);
+    WipeTower::xy start_pos = tcr.start_pos;
+    WipeTower::xy end_pos = tcr.end_pos;
+    start_pos.rotate(alpha);
+    start_pos.translate(m_wipe_tower_pos);
+    end_pos.rotate(alpha);
+    end_pos.translate(m_wipe_tower_pos);
+    std::string tcr_rotated_gcode = rotate_wipe_tower_moves(tcr.gcode, tcr.start_pos, m_wipe_tower_pos, alpha);
     
 
     // Disable linear advance for the wipe tower operations.
@@ -193,7 +193,7 @@ std::string WipeTowerIntegration::append_tcr(GCode &gcodegen, const WipeTower::T
 
     // Let the tool change be executed by the wipe tower class.
     // Inform the G-code writer about the changes done behind its back.
-    gcode += tcr.gcode;
+    gcode += tcr_rotated_gcode;
     // Let the m_writer know the current extruder_id, but ignore the generated G-code.
 	if (new_extruder_id >= 0 && gcodegen.writer().need_toolchange(new_extruder_id))
         gcodegen.writer().toolchange(new_extruder_id);
@@ -223,62 +223,56 @@ std::string WipeTowerIntegration::append_tcr(GCode &gcodegen, const WipeTower::T
 
     // Let the planner know we are traveling between objects.
     gcodegen.m_avoid_crossing_perimeters.use_external_mp_once = true;
-    rotate_gcode_moves(gcode, start_point, wipe_tower_pos, alpha);
     return gcode;
 }
 
-void WipeTowerIntegration::rotate_gcode_moves(std::string& gcode, Pointf start_pos, Pointf wipe_tower_pos, float angle) const
-{
-    std::string line;
-    std::string newline;
-    size_t index1 = 0;
-    size_t index2 = 0;
-    float x = 0.f;
-    float y = 0.f; // TODO: Initialize with start_pos
-    std::cout << "STARY GKOD:" << std::endl << gcode << std::endl;
-    while (true) {
-        index2 = gcode.find("\n", index1);
-        if (index2 == std::string::npos)
-            break;
-        line = gcode.substr(index1, index2-index1);
-        Pointf gcode_pos(x,y);
 
-        if (line.find("G1") == 0) {
-            std::istringstream in(line);
-            in >> std::noskipws;
-            std::ostringstream out;
+// This function postprocesses gcode_original, rotates and moves all G1 extrusions and returns resulting gcode
+// Starting position has to be supplied explicitely (otherwise it would fail in case first G1 command only contained one coordinate)
+std::string WipeTowerIntegration::rotate_wipe_tower_moves(const std::string& gcode_original, const WipeTower::xy& start_pos, const WipeTower::xy& translation, float angle) const
+{
+    std::istringstream gcode_str(gcode_original);
+    std::string gcode_out;
+    std::string line;
+    WipeTower::xy pos = start_pos;
+    WipeTower::xy transformed_pos;
+    WipeTower::xy old_pos(-1000.1f, -1000.1f);
+
+    while (gcode_str) {
+        std::getline(gcode_str, line);  // we read the gcode line by line
+
+        if (line.find("G1 ") == 0) {
+            std::ostringstream line_out;
+            std::istringstream line_str(line);
+            line_str >> std::noskipws;  // don't skip whitespace
             char ch = 0;
-            while (in >> ch) {
-                out << ch;
-                if (ch == 'X') {
-                    in >> gcode_pos.x;
-                    out << "__x__";
-                }
+            while (line_str >> ch) {
+                if (ch == 'X')
+                    line_str >> pos.x;
                 else
-                    if (ch == 'Y') {
-                        in >> gcode_pos.y;
-                        out << "__y__";
-                    }                    
+                    if (ch == 'Y')
+                        line_str >> pos.y;
+                    else
+                        line_out << ch;
             }
 
-            gcode_pos.rotate(angle);
-            gcode_pos.translate(wipe_tower_pos);
-            
-            // TODO: std::to_string does not allow changing float precision
-            line = out.str();
-            std::cout << line << std::endl;
-            if (line.find("__x__") != std::string::npos)
-                line.replace(line.find("__x__"), 5, std::to_string(gcode_pos.x));
-            if (line.find("__y__") != std::string::npos)
-                line.replace(line.find("__y__"), 5, std::to_string(gcode_pos.y));
-        }
+            transformed_pos = pos;
+            transformed_pos.rotate(angle);
+            transformed_pos.translate(translation);
 
-        //std::cout << line << std::endl << std::endl;
-        gcode.replace(index1, index2-index1, line);
-        index1 = index2 + 1;
+            if (transformed_pos != old_pos) {
+                line = line_out.str();
+                std::ostringstream x_str;
+                std::ostringstream y_str;
+                x_str << std::setiosflags(std::ios::fixed) << std::setprecision(3) << transformed_pos.x;
+                y_str << std::setiosflags(std::ios::fixed) << std::setprecision(3) << transformed_pos.y;
+                line.replace(line.find("G1 "), 3, "G1 X" + x_str.str() + " Y" + y_str.str() + " ");
+                old_pos = transformed_pos;
+            }
+        }
+        gcode_out += line + "\n";
     }
-    std::cout << "NOVY GKOD:" << std::endl << gcode << std::endl << std::endl << std::endl;
-    //while (1) { index2 += 1; }
+    return gcode_out;
 }
 
 

@@ -38,10 +38,17 @@ public:
 		}
         
         // Rotate the point around origin about given angle in degrees
-        xy rotate(float angle) const {
-			return this->rotate(0.f, 0.f, angle);
+        void rotate(float angle) {
+            float temp_x = x * cos(angle)  -  y * sin(angle);
+			y = x * sin(angle)  +  y * cos(angle);
+            x = temp_x;
 		}
-		
+
+        void translate(const xy& vect) {
+            x += vect.x;
+            y += vect.y;
+        }
+
 		float x;
 		float y;
 	};
@@ -108,6 +115,9 @@ public:
 		// Time elapsed over this tool change.
 		// This is useful not only for the print time estimation, but also for the control of layer cooling.
 		float  				    elapsed_time;
+
+        // Is this a priming extrusion? (If so, the wipe tower rotation & translation will not be applied later)
+        bool                    priming;
 
 		// Sum the total length of the extrusion.
 		float total_extrusion_length_in_plane() {
