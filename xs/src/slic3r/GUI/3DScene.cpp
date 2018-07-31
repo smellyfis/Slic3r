@@ -644,19 +644,33 @@ std::vector<int> GLVolumeCollection::load_object(
 }
 
 int GLVolumeCollection::load_wipe_tower_preview(
-    int obj_idx, float pos_x, float pos_y, float width, float depth, float height, float rotation_angle, bool use_VBOs)
+    int obj_idx, float pos_x, float pos_y, float width, float depth, float height, float rotation_angle, bool use_VBOs, bool size_unknown)
 {
-    float color[4] = { 0.5f, 0.5f, 0.0f, 0.5f };
-    this->volumes.emplace_back(new GLVolume(color));
-    GLVolume &v = *this->volumes.back();
-
     if (height == 0.0f)
         height = 0.1f;
-
-    auto mesh = make_cube(width, depth, height);
-    // mesh.translate(-width / 2.f, -depth / 2.f, 0.f);
     Point origin_of_rotation(0.f, 0.f);
-    mesh.rotate(rotation_angle,&origin_of_rotation);
+    TriangleMesh mesh = make_cube(width, depth, height);
+    float color[4] = { 0.5f, 0.5f, 0.0f, 0.5f };
+
+    // In case we don't know precise dimensions of the wipe tower yet, we'll draw the box with different color with one side jagged:
+    if (size_unknown) {
+        color[0] = 1.f;
+        color[1] = 0.f;
+        // Jagged edge is created by merging the mesh with properly rotated and translated smaller cubes:
+        const unsigned int num = 5; // number of spikes along the indeterminate edge
+        TriangleMesh small_cube = make_cube(width/(sqrt(2)*num), width/(sqrt(2)*num), height-0.01f); // the z-offset is to hide artifacts on the surface
+        for (unsigned int i=0; i<num; ++i) {
+            TriangleMesh transformed_cube(small_cube);
+            transformed_cube.rotate(45.f, &origin_of_rotation);
+            transformed_cube.translate((i+0.5)*width/num, depth-width/(2*num) , 0.f);
+            mesh.merge(transformed_cube);
+        }
+    }
+
+    mesh.rotate(rotation_angle, &origin_of_rotation); // rotates the box according to the config rotation setting
+
+    this->volumes.emplace_back(new GLVolume(color));
+    GLVolume &v = *this->volumes.back();
 
     if (use_VBOs)
         v.indexed_vertex_array.load_mesh_full_shading(mesh);

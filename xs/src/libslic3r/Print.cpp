@@ -178,7 +178,12 @@ bool Print::invalidate_state_by_config_options(const std::vector<t_config_option
 
     // Always invalidate the wipe tower. This is probably necessary because of the wipe_into_infill / wipe_into_objects
     // features - nearly anything can influence what should (and could) be wiped into.
-    steps.emplace_back(psWipeTower);
+    // Only these three parameters don't invalidate the wipe tower (they only affect the gcode export):
+    for (const t_config_option_key &opt_key : opt_keys)
+        if (opt_key != "wipe_tower_x" && opt_key != "wipe_tower_y" && opt_key != "wipe_tower_rotation_angle") {
+            steps.emplace_back(psWipeTower);
+            break;
+        }
 
     for (const t_config_option_key &opt_key : opt_keys) {
         if (steps_ignore.find(opt_key) != steps_ignore.end()) {
