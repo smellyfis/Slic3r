@@ -166,7 +166,10 @@ bool Print::invalidate_state_by_config_options(const std::vector<t_config_option
         "use_relative_e_distances",
         "use_volumetric_e",
         "variable_layer_height",
-        "wipe"
+        "wipe",
+        "wipe_tower_x",
+        "wipe_tower_y",
+        "wipe_tower_rotation_angle"
     };
 
     std::vector<PrintStep> steps;
@@ -212,10 +215,7 @@ bool Print::invalidate_state_by_config_options(const std::vector<t_config_option
             || opt_key == "spiral_vase"
             || opt_key == "temperature"
             || opt_key == "wipe_tower"
-            || opt_key == "wipe_tower_x"
-            || opt_key == "wipe_tower_y"
             || opt_key == "wipe_tower_width"
-            || opt_key == "wipe_tower_rotation_angle"
             || opt_key == "wipe_tower_bridging"
             || opt_key == "wiping_volumes_matrix"
             || opt_key == "parking_pos_retraction"
@@ -1162,7 +1162,8 @@ void Print::_make_wipe_tower()
     // Generate the wipe tower layers.
     m_wipe_tower_tool_changes.reserve(m_tool_ordering.layer_tools().size());
     wipe_tower.generate(m_wipe_tower_tool_changes);
-    
+    m_wipe_tower_depth = wipe_tower.get_depth();
+
     // Unload the current filament over the purge tower.
     coordf_t layer_height = this->objects.front()->config.layer_height.value;
     if (m_tool_ordering.back().wipe_tower_partitions > 0) {

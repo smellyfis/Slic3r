@@ -1493,6 +1493,9 @@ sub on_process_completed {
     return if $error;
     $self->{toolpaths2D}->reload_print if $self->{toolpaths2D};
     $self->{preview3D}->reload_print if $self->{preview3D};
+
+    # in case this was MM print, wipe tower bounding box on 3D tab might need redrawing with exact depth:
+    Slic3r::GUI::_3DScene::reload_scene($self->{canvas3D}, 1);
     
     # if we have an export filename, start a new thread for exporting G-code
     if ($self->{export_gcode_output_file}) {
