@@ -328,7 +328,7 @@ private:
     PrintRegionConfig _region_config_from_model_volume(const ModelVolume &volume);
 
     // Depth of the wipe tower to pass to GLCanvas3D for exact bounding box:
-    float m_wipe_tower_depth;
+    float m_wipe_tower_depth = 0.f;
 
     // Has the calculation been canceled?
     tbb::atomic<bool>   m_canceled;

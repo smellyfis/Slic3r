@@ -71,7 +71,7 @@ public:
         m_wipe_tower_width = width;
         m_wipe_tower_depth = depth;
         m_internal_angle = internal_angle;
-		m_start_pos = pos.rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle);
+		m_start_pos = WipeTower::xy(pos,0.f,m_y_shift).rotate(m_wipe_tower_width, m_wipe_tower_depth, m_internal_angle);
 		m_current_pos = pos;
 		return *this;
 	}
@@ -1186,7 +1186,7 @@ void WipeTowerPrusaMM::generate(std::vector<std::vector<WipeTower::ToolChangeRes
 					last_toolchange.gcode += buf;
 				}
                 last_toolchange.gcode += finish_layer_toolchange.gcode;
-                last_toolchange.extrusions.insert(last_toolchange.extrusions.end(),finish_layer_toolchange.extrusions.begin(),finish_layer_toolchange.extrusions.end());
+                last_toolchange.extrusions.insert(last_toolchange.extrusions.end(), finish_layer_toolchange.extrusions.begin(), finish_layer_toolchange.extrusions.end());
                 last_toolchange.end_pos = finish_layer_toolchange.end_pos;
             }
             else

@@ -226,7 +226,6 @@ std::string WipeTowerIntegration::append_tcr(GCode &gcodegen, const WipeTower::T
     return gcode;
 }
 
-
 // This function postprocesses gcode_original, rotates and moves all G1 extrusions and returns resulting gcode
 // Starting position has to be supplied explicitely (otherwise it would fail in case first G1 command only contained one coordinate)
 std::string WipeTowerIntegration::rotate_wipe_tower_moves(const std::string& gcode_original, const WipeTower::xy& start_pos, const WipeTower::xy& translation, float angle) const
@@ -240,7 +239,6 @@ std::string WipeTowerIntegration::rotate_wipe_tower_moves(const std::string& gco
 
     while (gcode_str) {
         std::getline(gcode_str, line);  // we read the gcode line by line
-
         if (line.find("G1 ") == 0) {
             std::ostringstream line_out;
             std::istringstream line_str(line);
@@ -262,11 +260,13 @@ std::string WipeTowerIntegration::rotate_wipe_tower_moves(const std::string& gco
 
             if (transformed_pos != old_pos) {
                 line = line_out.str();
-                std::ostringstream x_str;
-                std::ostringstream y_str;
-                x_str << std::setiosflags(std::ios::fixed) << std::setprecision(3) << transformed_pos.x;
-                y_str << std::setiosflags(std::ios::fixed) << std::setprecision(3) << transformed_pos.y;
-                line.replace(line.find("G1 "), 3, "G1 X" + x_str.str() + " Y" + y_str.str() + " ");
+                char buf[2048] = "G1";
+                if (transformed_pos.x != old_pos.x)
+                    sprintf(buf + strlen(buf), " X%.3f", transformed_pos.x);
+                if (transformed_pos.y != old_pos.y)
+                    sprintf(buf + strlen(buf), " Y%.3f", transformed_pos.y);
+
+                line.replace(line.find("G1 "), 3, buf);
                 old_pos = transformed_pos;
             }
         }

@@ -1056,6 +1056,8 @@ void Print::_make_wipe_tower()
     if (! this->has_wipe_tower())
         return;
 
+    m_wipe_tower_depth = 0.f;
+
     // Get wiping matrix to get number of extruders and convert vector<double> to vector<float>:
     std::vector<float> wiping_matrix((this->config.wiping_volumes_matrix.values).begin(),(this->config.wiping_volumes_matrix.values).end());
     // Extract purging volumes for each extruder pair:

@@ -2292,7 +2292,9 @@ void GLCanvas3D::reload_scene(bool force)
             float w = dynamic_cast<const ConfigOptionFloat*>(m_config->option("wipe_tower_width"))->value;
             float a = dynamic_cast<const ConfigOptionFloat*>(m_config->option("wipe_tower_rotation_angle"))->value;
 
-            float depth = m_print->state.is_done(psWipeTower) ? m_print->get_wipe_tower_depth() : 15.0f * (float)(extruders_count - 1) ;
+            float depth = m_print->get_wipe_tower_depth();
+            if (!m_print->state.is_done(psWipeTower) || depth < 0.01f)
+                depth = (900.f/w) * (float)(extruders_count - 1) ;
 
             m_volumes.load_wipe_tower_preview(1000, x, y, w, depth, (float)height, a, m_use_VBOs && m_initialized, !m_print->state.is_done(psWipeTower));
         }
@@ -4647,7 +4649,9 @@ void GLCanvas3D::_load_shells()
     const PrintConfig& config = m_print->config;
     unsigned int extruders_count = config.nozzle_diameter.size();
     if ((extruders_count > 1) && config.single_extruder_multi_material && config.wipe_tower && !config.complete_objects) {
-        float depth = m_print->state.is_done(psWipeTower) ? m_print->get_wipe_tower_depth() : 15.0f * (float)(extruders_count - 1) ;
+        float depth = m_print->get_wipe_tower_depth();
+        if (!m_print->state.is_done(psWipeTower) || depth < 0.01f)
+            depth = (900.f/config.wipe_tower_width) * (float)(extruders_count - 1) ;
         m_volumes.load_wipe_tower_preview(1000, config.wipe_tower_x, config.wipe_tower_y, config.wipe_tower_width, depth, max_z, config.wipe_tower_rotation_angle,
                                           m_use_VBOs && m_initialized, !m_print->state.is_done(psWipeTower));
     }

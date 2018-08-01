@@ -643,29 +643,51 @@ std::vector<int> GLVolumeCollection::load_object(
     return volumes_idx; 
 }
 
+
 int GLVolumeCollection::load_wipe_tower_preview(
     int obj_idx, float pos_x, float pos_y, float width, float depth, float height, float rotation_angle, bool use_VBOs, bool size_unknown)
 {
     if (height == 0.0f)
         height = 0.1f;
     Point origin_of_rotation(0.f, 0.f);
-    TriangleMesh mesh = make_cube(width, depth, height);
-    float color[4] = { 0.5f, 0.5f, 0.0f, 0.5f };
+    TriangleMesh mesh;
+    float color[4] = { 0.5f, 0.5f, 0.0f, 1.f };
 
     // In case we don't know precise dimensions of the wipe tower yet, we'll draw the box with different color with one side jagged:
     if (size_unknown) {
         color[0] = 1.f;
         color[1] = 0.f;
-        // Jagged edge is created by merging the mesh with properly rotated and translated smaller cubes:
-        const unsigned int num = 5; // number of spikes along the indeterminate edge
-        TriangleMesh small_cube = make_cube(width/(sqrt(2)*num), width/(sqrt(2)*num), height-0.01f); // the z-offset is to hide artifacts on the surface
-        for (unsigned int i=0; i<num; ++i) {
-            TriangleMesh transformed_cube(small_cube);
-            transformed_cube.rotate(45.f, &origin_of_rotation);
-            transformed_cube.translate((i+0.5)*width/num, depth-width/(2*num) , 0.f);
-            mesh.merge(transformed_cube);
+
+        float min_width = 30.f;
+        // We'll now create the box with jagged edge. y-coordinates of the pre-generated model are shifted so that the front
+        // edge has y=0 and centerline of the back edge has y=depth:
+        Pointf3s points;
+        std::vector<Point3> facets;
+        float out_points_idx[][3] = {{0, -depth, 0}, {0, 0, 0}, {38.453, 0, 0}, {61.547, 0, 0}, {100, 0, 0}, {100, -depth, 0}, {55.7735, -10, 0}, {44.2265, 10, 0}, {38.453, 0, 1}, {0, 0, 1}, {0, -depth, 1}, {100, -depth, 1}, {100, 0, 1}, {61.547, 0, 1}, {55.7735, -10, 1}, {44.2265, 10, 1}};
+        int out_facets_idx[][3] = {{0, 1, 2}, {3, 4, 5}, {6, 5, 0}, {3, 5, 6}, {6, 2, 7}, {6, 0, 2}, {8, 9, 10}, {11, 12, 13}, {10, 11, 14}, {14, 11, 13}, {15, 8, 14}, {8, 10, 14}, {3, 12, 4}, {3, 13, 12}, {6, 13, 3}, {6, 14, 13}, {7, 14, 6}, {7, 15, 14}, {2, 15, 7}, {2, 8, 15}, {1, 8, 2}, {1, 9, 8}, {0, 9, 1}, {0, 10, 9}, {5, 10, 0}, {5, 11, 10}, {4, 11, 5}, {4, 12, 11}};
+        for (int i=0;i<16;++i)
+            points.push_back(Pointf3(out_points_idx[i][0] / (100.f/min_width), out_points_idx[i][1] + depth, out_points_idx[i][2]));
+        for (int i=0;i<28;++i)
+            facets.push_back(Point3(out_facets_idx[i][0], out_facets_idx[i][1], out_facets_idx[i][2]));
+        TriangleMesh pokus(points, facets);
+
+        // We have the mesh ready. It has one tooth and width of min_width. We will now append several of these together until we are close to
+        // the required width of the block. Than we can scale it precisely.
+        size_t n = std::max(1, int(width/min_width)); // How many shall be merged?
+        for (size_t i=0;i<n;++i) {
+            mesh.merge(pokus);
+            pokus.translate(min_width, 0.f, 0.f);
         }
+
+        mesh.scale(Pointf3(width/(n*min_width), 1.f, height)); // Scaling to proper width
     }
+    else
+        mesh = make_cube(width, depth, height);
+
+    // We'll make another mesh to roughly show the brim: (0.5*6 mm)
+    TriangleMesh brim_mesh = make_cube(width+6.f, depth+6.f, 0.2f);
+    brim_mesh.translate(-3.f, -3.f, 0.f);
+    mesh.merge(brim_mesh);
 
     mesh.rotate(rotation_angle, &origin_of_rotation); // rotates the box according to the config rotation setting
 
