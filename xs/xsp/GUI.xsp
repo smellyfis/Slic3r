@@ -87,15 +87,6 @@ void add_frequently_changed_parameters(SV *ui_parent, SV *ui_sizer, SV *ui_p_siz
                                                            (wxBoxSizer*)wxPli_sv_2_object(aTHX_ ui_sizer, "Wx::BoxSizer"),
                                                            (wxFlexGridSizer*)wxPli_sv_2_object(aTHX_ ui_p_sizer, "Wx::FlexGridSizer")); %};
 
-%package{Slic3r::_GUI};
-%{
-void
-register_on_request_update_callback(callback)
-        SV *callback;
-    CODE:
-        Slic3r::GUI::register_on_request_update_callback((void*)callback);
-%}
-
 std::string fold_utf8_to_ascii(const char *src)
     %code%{ RETVAL = Slic3r::fold_utf8_to_ascii(src); %};
 
@@ -113,3 +104,12 @@ void fix_model_by_win10_sdk_gui(ModelObject *model_object_src, Print *print, Mod
 
 void set_3DScene(SV *scene)
     %code%{ Slic3r::GUI::set_3DScene((_3DScene *)wxPli_sv_2_object(aTHX_ scene, "Slic3r::Model::3DScene") ); %};
+
+%package{Slic3r::_GUI};
+%{
+void
+register_on_request_update_callback(callback)
+        SV *callback;
+    CODE:
+        Slic3r::GUI::register_on_request_update_callback((void*)callback);
+%}
