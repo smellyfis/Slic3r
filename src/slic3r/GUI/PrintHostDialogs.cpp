@@ -59,9 +59,17 @@ bool PrintHostSendDialog::start_print() const
 
 
 
+wxDEFINE_EVENT(EVT_PRINTHOST_PROGRESS, PrintHostQueueDialog::ProgressEvt);
+
+wxEvent *PrintHostQueueDialog::ProgressEvt::Clone() const
+{
+    return new ProgressEvt(*this);
+}
+
 PrintHostQueueDialog::PrintHostQueueDialog(wxWindow *parent)
     : wxDialog(parent, wxID_ANY, _(L("Print host upload queue")), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
     , prev_width(0)
+    , on_progress_evt(this, EVT_PRINTHOST_PROGRESS, &PrintHostQueueDialog::on_progress, this)
 {
     enum { HEIGHT = 800, WIDTH = 400, SPACING = 5 };
 
@@ -106,6 +114,8 @@ PrintHostQueueDialog::PrintHostQueueDialog(wxWindow *parent)
     // job_list->Bind(wxEVT_SIZE, [this](wxSizeEvent &evt) {
     //     CallAfter([this]() { sanitize_col_widths(); });
     // });
+
+    // Bind(EVT_PRINTHOST_PROGRESS, PrintHostQueueDialog::on_progress, this);
 }
 
 void PrintHostQueueDialog::append_job(const PrintHostJob &job)
@@ -115,7 +125,7 @@ void PrintHostQueueDialog::append_job(const PrintHostJob &job)
     wxVector<wxVariant> fields;
     fields.push_back(wxVariant(wxString::Format("%d", job_list->GetItemCount() + 1)));
     fields.push_back(wxVariant(0));
-    fields.push_back(wxVariant("Enqueued"));
+    fields.push_back(wxVariant(_(L("Enqueued"))));
     fields.push_back(wxVariant(job.printhost->get_host()));
     fields.push_back(wxVariant(job.upload_data.upload_path.string()));
     job_list->AppendItem(fields);
@@ -151,6 +161,18 @@ void PrintHostQueueDialog::sanitize_col_widths()    // XXX: remove
     }
 
     prev_width = width;
+}
+
+void PrintHostQueueDialog::on_progress(ProgressEvt &evt)
+{
+    wxCHECK_RET(evt.job_id < job_list->GetItemCount(), "Out of bounds access to job list");
+
+    switch (evt.state) {
+        case ProgressEvt::ST_PROGRESS: break;
+        case ProgressEvt::ST_COMPLETE: break;
+        case ProgressEvt::ST_ERROR: break;
+        default: break;
+    }
 }
 
 

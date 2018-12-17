@@ -48,7 +48,6 @@ struct PrintHostJob
     std::unique_ptr<PrintHost> printhost;
     bool cancelled = false;
 
-    // PrintHostJob() :state(ST_NEW) {}
     PrintHostJob() {}
     PrintHostJob(const PrintHostJob&) = delete;
     PrintHostJob(PrintHostJob &&other)
