@@ -3,7 +3,6 @@
 #include <algorithm>
 
 #include <wx/frame.h>
-#include <wx/event.h>
 #include <wx/progdlg.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -59,17 +58,35 @@ bool PrintHostSendDialog::start_print() const
 
 
 
-wxDEFINE_EVENT(EVT_PRINTHOST_PROGRESS, PrintHostQueueDialog::ProgressEvt);
+wxDEFINE_EVENT(EVT_PRINTHOST_PROGRESS, PrintHostQueueDialog::Event);
+wxDEFINE_EVENT(EVT_PRINTHOST_ERROR, PrintHostQueueDialog::Event);
 
-wxEvent *PrintHostQueueDialog::ProgressEvt::Clone() const
+PrintHostQueueDialog::Event::Event(wxEventType eventType, int winid, size_t job_id)
+    : wxEvent(winid, eventType)
+    , job_id(job_id)
+{}
+
+PrintHostQueueDialog::Event::Event(wxEventType eventType, int winid, size_t job_id, int progress)
+    : wxEvent(winid, eventType)
+    , job_id(job_id)
+    , progress(progress)
+{}
+
+PrintHostQueueDialog::Event::Event(wxEventType eventType, int winid, size_t job_id, wxString error)
+    : wxEvent(winid, eventType)
+    , job_id(job_id)
+    , error(std::move(error))
+{}
+
+wxEvent *PrintHostQueueDialog::Event::Clone() const
 {
-    return new ProgressEvt(*this);
+    return new Event(*this);
 }
 
 PrintHostQueueDialog::PrintHostQueueDialog(wxWindow *parent)
     : wxDialog(parent, wxID_ANY, _(L("Print host upload queue")), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
-    , prev_width(0)
     , on_progress_evt(this, EVT_PRINTHOST_PROGRESS, &PrintHostQueueDialog::on_progress, this)
+    , on_error_evt(this, EVT_PRINTHOST_ERROR, &PrintHostQueueDialog::on_error, this)
 {
     enum { HEIGHT = 800, WIDTH = 400, SPACING = 5 };
 
@@ -84,22 +101,6 @@ PrintHostQueueDialog::PrintHostQueueDialog(wxWindow *parent)
     job_list->AppendTextColumn("Host", wxDATAVIEW_CELL_INERT);
     job_list->AppendTextColumn("Filename", wxDATAVIEW_CELL_INERT);
 
-    // XXX:
-    wxVector<wxVariant> data;
-    data.push_back(wxVariant("1"));
-    data.push_back(wxVariant(0));
-    data.push_back(wxVariant("enqueued"));
-    data.push_back(wxVariant("foobar.local"));
-    data.push_back(wxVariant("barbaz.gcode"));
-    job_list->AppendItem(data);
-    data.clear();
-    data.push_back(wxVariant("2"));
-    data.push_back(wxVariant(50));
-    data.push_back(wxVariant("uploading"));
-    data.push_back(wxVariant("quzqux.local"));
-    data.push_back(wxVariant("frobnicator.gcode"));
-    job_list->AppendItem(data);
-
     auto *btnsizer = new wxBoxSizer(wxHORIZONTAL);
     auto *btn_cancel = new wxButton(this, wxID_DELETE, _(L("Cancel selected")));
     auto *btn_close = new wxButton(this, wxID_CANCEL, _(L("Close")));
@@ -110,12 +111,6 @@ PrintHostQueueDialog::PrintHostQueueDialog(wxWindow *parent)
     topsizer->Add(job_list, 1, wxEXPAND | wxBOTTOM, SPACING);
     topsizer->Add(btnsizer, 0, wxEXPAND);
     SetSizer(topsizer);
-
-    // job_list->Bind(wxEVT_SIZE, [this](wxSizeEvent &evt) {
-    //     CallAfter([this]() { sanitize_col_widths(); });
-    // });
-
-    // Bind(EVT_PRINTHOST_PROGRESS, PrintHostQueueDialog::on_progress, this);
 }
 
 void PrintHostQueueDialog::append_job(const PrintHostJob &job)
@@ -131,48 +126,21 @@ void PrintHostQueueDialog::append_job(const PrintHostJob &job)
     job_list->AppendItem(fields);
 }
 
-// int PrintHostQueueDialog::ShowModal()
-// {
-//     CallAfter([this]() { sanitize_col_widths(); });
-//     return wxDialog::ShowModal();
-// }
-
-void PrintHostQueueDialog::sanitize_col_widths()    // XXX: remove
-{
-    enum { PRORGESS_SIZE = 100 };
-
-    const int width = job_list->GetSize().GetWidth();
-
-    auto col_host = job_list->GetColumn(0);
-    auto col_file = job_list->GetColumn(1);
-    auto col_status = job_list->GetColumn(2);
-    auto col_progress = job_list->GetColumn(3);
-
-    // This ensure column shrinking when the window is shrinked
-    const int fix_shrink = std::min(width - prev_width, 0);
-    col_file->SetWidth(col_file->GetWidth() + fix_shrink);
-
-    // Here we ensure that progress field is PRORGESS_SIZE wide and we detect extra width byeond that
-    // The extra width (if any) is moved to the filename field
-    const int extra_size = col_progress->GetWidth() - PRORGESS_SIZE;
-    if (extra_size > 0) {
-        col_file->SetWidth(col_file->GetWidth() + extra_size);
-        col_progress->SetWidth(PRORGESS_SIZE);
-    }
-
-    prev_width = width;
-}
-
-void PrintHostQueueDialog::on_progress(ProgressEvt &evt)
+void PrintHostQueueDialog::on_progress(Event &evt)
 {
     wxCHECK_RET(evt.job_id < job_list->GetItemCount(), "Out of bounds access to job list");
 
-    switch (evt.state) {
-        case ProgressEvt::ST_PROGRESS: break;
-        case ProgressEvt::ST_COMPLETE: break;
-        case ProgressEvt::ST_ERROR: break;
-        default: break;
-    }
+    const wxVariant status(evt.progress < 100 ? _(L("Uploading")) : _(L("Complete")));
+
+    job_list->SetValue(wxVariant(evt.progress), evt.job_id, 1);
+    job_list->SetValue(status, evt.job_id, 2);
+}
+
+void PrintHostQueueDialog::on_error(Event &evt)
+{
+    wxCHECK_RET(evt.job_id < job_list->GetItemCount(), "Out of bounds access to job list");
+
+    // TODO
 }
 
 

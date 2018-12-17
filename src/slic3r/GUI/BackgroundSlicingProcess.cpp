@@ -98,7 +98,7 @@ void BackgroundSlicingProcess::process_fff()
 
 			m_print->set_status(95, "Running post-processing scripts");
 			run_post_process_scripts(source_path.string(), m_fff_print->config());
-			m_print->set_status(100, (boost::format("Slicing finished, scheduling upload to `%1%`") % m_upload_job.printhost->get_host()).str());
+			m_print->set_status(100, (boost::format("Scheduling upload to `%1%`. See Window -> Print Host Upload Queue") % m_upload_job.printhost->get_host()).str());
 
 			m_upload_job.upload_data.source_path = std::move(source_path);
 			m_upload_job.upload_data.upload_path = m_fff_print->print_statistics().finalize_output_path(m_upload_job.upload_data.upload_path.string());

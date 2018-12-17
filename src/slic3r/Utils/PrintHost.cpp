@@ -1,6 +1,11 @@
+#include "PrintHost.hpp"
+
 #include <vector>
 #include <thread>
 #include <boost/optional.hpp>
+#include <boost/filesystem.hpp>
+
+#include <wx/app.h>
 
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Channel.hpp"
@@ -8,8 +13,9 @@
 #include "Duet.hpp"
 #include "../GUI/PrintHostDialogs.hpp"
 
+namespace fs = boost::filesystem;
 using boost::optional;
-
+using Slic3r::GUI::PrintHostQueueDialog;
 
 namespace Slic3r {
 
@@ -37,20 +43,23 @@ struct PrintHostJobQueue::priv
     Channel<PrintHostJob> channel_jobs;
     Channel<size_t> channel_cancels;
     size_t job_id = 0;
+    int prev_progress = -1;
 
     std::thread bg_thread;
-    bool bg_exit;
+    bool bg_exit = false;
 
-    GUI::PrintHostQueueDialog *queue_dialog;
+    PrintHostQueueDialog *queue_dialog;
 
     priv(PrintHostJobQueue *q) : q(q) {}
 
     void start_bg_thread();
     void bg_thread_main();
+    void progress_fn(Http::Progress progress, bool &cancel);
+    void error_fn(std::string body, std::string error, unsigned http_status);
     void perform_job(PrintHostJob the_job);
 };
 
-PrintHostJobQueue::PrintHostJobQueue(GUI::PrintHostQueueDialog *queue_dialog)
+PrintHostJobQueue::PrintHostJobQueue(PrintHostQueueDialog *queue_dialog)
     : p(new priv(this))
 {
     p->queue_dialog = queue_dialog;
@@ -79,51 +88,78 @@ void PrintHostJobQueue::priv::bg_thread_main()
 {
     // bg thread entry point
 
-    // Pick up jobs from the job channel:
-    while (! bg_exit) {
-        auto job = channel_jobs.pop();   // Sleeps in a cond var if there are no jobs
-        if (! job.cancelled) {
-            perform_job(std::move(job));
+    try {
+        // Pick up jobs from the job channel:
+        while (! bg_exit) {
+            auto job = channel_jobs.pop();   // Sleeps in a cond var if there are no jobs
+            if (! job.cancelled) {
+                perform_job(std::move(job));
+            }
+            job_id++;
         }
-        job_id++;
+    } catch (...) {
+        wxTheApp->OnUnhandledException();
     }
+}
+
+void PrintHostJobQueue::priv::progress_fn(Http::Progress progress, bool &cancel)
+{
+    if (bg_exit) {
+        cancel = true;
+        return;
+    }
+
+    if (channel_cancels.size_hint() > 0) {
+        // Lock both queues
+        auto cancels = channel_cancels.lock_rw();
+        auto jobs = channel_jobs.lock_rw();
+
+        for (size_t cancel_id : *cancels) {
+            if (cancel_id == job_id) {
+                cancel = true;
+            } else if (cancel_id > job_id) {
+                jobs->at(cancel_id - job_id).cancelled = true;
+            }
+        }
+
+        cancels->clear();
+    }
+
+    int gui_progress = progress.ultotal > 0 ? 100*progress.ulnow / progress.ultotal : 0;
+    if (gui_progress != prev_progress) {
+        auto evt = new PrintHostQueueDialog::Event(GUI::EVT_PRINTHOST_PROGRESS, queue_dialog->GetId(), job_id, gui_progress);
+        wxQueueEvent(queue_dialog, evt);
+        prev_progress = gui_progress;
+    }
+}
+
+void PrintHostJobQueue::priv::error_fn(std::string body, std::string error, unsigned http_status)
+{
+    // TODO
 }
 
 void PrintHostJobQueue::priv::perform_job(PrintHostJob the_job)
 {
     if (bg_exit || the_job.empty()) { return; }
 
-    the_job.printhost->upload(std::move(the_job.upload_data), [this](Http::Progress progress, bool &cancel) {
-        if (bg_exit) {
-            cancel = true;
-            return;
-        }
+    const fs::path gcode_path = the_job.upload_data.source_path;
 
-        if (channel_cancels.size_hint() > 0) {
-            // Lock both queues
-            auto cancels = channel_cancels.lock_rw();
-            auto jobs = channel_jobs.lock_rw();
+    the_job.printhost->upload(std::move(the_job.upload_data),
+        [this](Http::Progress progress, bool &cancel) { this->progress_fn(std::move(progress), cancel); },
+        [this](std::string body, std::string error, unsigned http_status) { this->error_fn(std::move(body), std::move(error), http_status); }
+    );
 
-            for (size_t cancel_id : *cancels) {
-                if (cancel_id == job_id) {
-                    cancel = true;
-                } else if (cancel_id > job_id) {
-                    jobs->at(cancel_id - job_id).cancelled = true;
-                }
-            }
+    auto evt = new PrintHostQueueDialog::Event(GUI::EVT_PRINTHOST_PROGRESS, queue_dialog->GetId(), job_id, 100);
+    wxQueueEvent(queue_dialog, evt);
 
-            cancels->clear();
-        }
-
-        // TODO: report progress
-    });
+    fs::remove(gcode_path);   // XXX: error handling
 }
 
 void PrintHostJobQueue::enqueue(PrintHostJob job)
 {
     p->start_bg_thread();
     p->queue_dialog->append_job(job);
-    // p->channel_jobs.push(std::move(job));    // XXX
+    p->channel_jobs.push(std::move(job));
 }
 
 

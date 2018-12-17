@@ -41,23 +41,16 @@ private:
 class PrintHostQueueDialog : public wxDialog
 {
 public:
-    class ProgressEvt : public wxEvent
+    class Event : public wxEvent
     {
     public:
-        enum State {
-            ST_PROGRESS,
-            ST_COMPLETE,
-            ST_ERROR,
-        };
-
-        State state;
         size_t job_id;
-        unsigned progress = 0;  // in percent
-        wxString error;         // only non-empty if there was an error
+        int progress = 0;    // in percent
+        wxString error;      // only non-empty for state == ST_ERROR
 
-        ProgressEvt(size_t job_id, State state) : job_id(job_id), state(state) {}
-        ProgressEvt(size_t job_id, unsigned progress) : job_id(job_id), state(ST_PROGRESS), progress(progress) {}
-        ProgressEvt(size_t job_id, wxString error) : job_id(job_id), state(ST_ERROR), error(std::move(error)) {}
+        Event(wxEventType eventType, int winid, size_t job_id);
+        Event(wxEventType eventType, int winid, size_t job_id, int progress);
+        Event(wxEventType eventType, int winid, size_t job_id, wxString error);
 
         virtual wxEvent *Clone() const;
     };
@@ -66,16 +59,18 @@ public:
     PrintHostQueueDialog(wxWindow *parent);
 
     void append_job(const PrintHostJob &job);
-
-    // virtual int ShowModal();
 private:
     wxDataViewListCtrl *job_list;
-    int prev_width;    // XXX: remove
-    EventGuard on_progress_evt;   // This prevents delivery of progress evts to a freed PrintHostQueueDialog
+    // Note: EventGuard prevents delivery of progress evts to a freed PrintHostQueueDialog
+    EventGuard on_progress_evt;
+    EventGuard on_error_evt;
 
-    void sanitize_col_widths();
-    void on_progress(ProgressEvt&);
+    void on_progress(Event&);
+    void on_error(Event&);
 };
+
+wxDECLARE_EVENT(EVT_PRINTHOST_PROGRESS, PrintHostQueueDialog::Event);
+wxDECLARE_EVENT(EVT_PRINTHOST_ERROR, PrintHostQueueDialog::Event);
 
 
 }}
